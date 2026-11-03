@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Night Route",
+    "slug": "night-route",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "nightroute",
+    "newArchEnabled": true,
+    "android": {
+      "package": "com.pauloaunor.nightroute",
+      "adaptiveIcon": {
+        "backgroundColor": "#0a0a0a"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-asset",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#4ade80"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Night Route uses your location to start a shift from where you are and to re-route the stops you have left.",
+          "locationAlwaysAndWhenInUsePermission": "Night Route records the distance you drive during a shift, even while Google Maps is open.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {}
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "ios": {}
+  }
+}

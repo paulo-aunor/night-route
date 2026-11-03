@@ -1,0 +1,17 @@
+node_modules
+.expo/
+dist/
+web-build/
+*.log
+.DS_Store
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.tsbuildinfo
+expo-env.d.ts
+
+# bake-heading-seeds.mjs download cache (rebuilt with `fetch`)
+scripts/.cache/
