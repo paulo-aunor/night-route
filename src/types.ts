@@ -39,6 +39,10 @@ export interface ShiftState {
   finishedAt: number | null;
   deliveredIds: string[];
   deliveredAt?: Record<string, number>;   // when each house was ticked, so time and distance can be told apart by route
+  // Compass heading (0-360, degrees from north) the car was travelling when each house was ticked, read from
+  // the latest reliable GPS fix on the shift's track. Null means nothing was known at the tick (standing still,
+  // no fix yet, or a device that doesn't report heading); Re-route uses it to tell real facing from the inferred one.
+  headingAt?: Record<string, number>;
   skippedIds: string[];
   orderedIds: string[];
   deliveryDayIdx?: number;

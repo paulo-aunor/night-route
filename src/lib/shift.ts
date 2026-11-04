@@ -18,7 +18,7 @@ import {
 import { reopenShift, saveClosed } from "./reopen";
 import { deliversOn, paperDayIndex } from "./schedule";
 import { loadRateCents } from "./settings";
-import { metersAt, stopTracking, trackDistance, trackedPoints, trackProfile } from "./tracking";
+import { headingBefore, metersAt, stopTracking, trackDistance, trackedPoints, trackProfile } from "./tracking";
 import {
   loadActiveShift, loadShift, saveShift, todayKey, newShift, clearShift,
   loadLastOrder, saveLastOrder, routeSetKey,
@@ -89,6 +89,19 @@ export const MIN_GAIN_FRACTION = 0.03;
 const worthChanging = (before: number, after: number): boolean => before - after >= Math.max(MIN_GAIN_M, MIN_GAIN_FRACTION * before);
 const AT_HOUSE_M = 150;   // close enough to the house just delivered to count as standing at it
 
+// Compass bearing (degrees from north, 0-360) along the great circle from a to b.
+function bearingDeg(a: Coord, b: Coord): number {
+  const r = (x: number) => (x * Math.PI) / 180;
+  const y = Math.sin(r(b.lng - a.lng)) * Math.cos(r(b.lat));
+  const x = Math.cos(r(a.lat)) * Math.sin(r(b.lat)) - Math.sin(r(a.lat)) * Math.cos(r(b.lat)) * Math.cos(r(b.lng - a.lng));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+// Shortest angular distance between two compass bearings, 0-180.
+function angleDiff(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
 export function planReroute(
   orderedIds: readonly string[],
   deliveredIds: readonly string[],
@@ -97,6 +110,7 @@ export function planReroute(
   coordOf: (id: string) => Coord | undefined,
   matrixIdOf?: (id: string) => string | undefined,
   shiftStart?: Coord,   // where the shift began when it began from a live location; the library otherwise
+  headingAt?: Record<string, number>,   // compass bearing (deg) recorded at each tick, from the GPS trail
 ): { orderedIds: string[]; stops: number; beforeM: number; afterM: number } {
   const stopped = new Set(stoppedIds);
   const delivered = new Set(deliveredIds);
@@ -104,24 +118,52 @@ export function planReroute(
   const remaining = orderedIds.filter((id) => !delivered.has(id) && !stopped.has(id));
   const hidden = orderedIds.filter((id) => !delivered.has(id) && stopped.has(id));
   if (remaining.length === 0) throw new Error("Nothing left to re-route.");
-  // Standing near the house just delivered, the first leg costs what it really costs from that house, facing the
-  // way the car was going (worked out from the houses delivered so far, in the order they were ticked).
+  // Standing near the house just delivered, the first leg costs what it really costs from that house, facing
+  // the way the car was going. First try: a compass heading recorded at the tick. Fall back to an inference
+  // from the tick order, and if the two disagree (about 180 apart) flip the inference to match what the
+  // phone actually saw. Without a recorded heading the inference stands and the both-facings gate below
+  // keeps the Re-route from making the drive longer.
   const last = deliveredIds[deliveredIds.length - 1];
+  const prev = deliveredIds[deliveredIds.length - 2];
   const lastCoord = last === undefined ? undefined : coordOf(last);
+  const prevCoord = prev === undefined ? undefined : coordOf(prev);
+  const liveHeading = last !== undefined ? headingAt?.[last] : undefined;
   let at: { houseId: string; facing: 0 | 1 | null } | undefined;
+  let headingSaysFlip = false;
   if (last !== undefined && lastCoord && haversineM(here, lastCoord) <= AT_HOUSE_M) {
     const begun: StartSpec = shiftStart ? { kind: "gps", coord: shiftStart } : { kind: "library" };
-    at = { houseId: last, facing: facingAfter({ stopIds: deliveredIds, order: deliveredIds, coordOf, matrixIdOf, start: begun }) };
+    const inferred = facingAfter({ stopIds: deliveredIds, order: deliveredIds, coordOf, matrixIdOf, start: begun });
+    // If the live heading points roughly opposite to the direction the inferred model drove the last leg
+    // in (the bearing from the previous house to the last), the model has the facing wrong. Flip it.
+    if (liveHeading !== undefined && prevCoord && haversineM(prevCoord, lastCoord) > 20) {
+      const flowBearing = bearingDeg(prevCoord, lastCoord);
+      headingSaysFlip = angleDiff(flowBearing, liveHeading) > 120;
+    }
+    const facing: 0 | 1 | null = inferred === null ? null : headingSaysFlip ? ((1 - inferred) as 0 | 1) : inferred;
+    at = { houseId: last, facing };
   }
   const start: StartSpec = { kind: "gps", coord: here, at };
   // Two starting points for the direction-aware search: the order as it stands, and a quick straight-distance order from here.
   const quick = optimizeV2({ stopIds: remaining, startCoord: here, coordOf, matrixIdOf, timeBudgetMs: 1000 });
   const solved = orderStops({ stopIds: remaining, coordOf, matrixIdOf, start, candidates: [remaining, quick.orderedIds], ms: 3000 });
-  const cost = (order: readonly string[]) => orderCost({ stopIds: order, order, coordOf, matrixIdOf, start });
-  const chosen = worthChanging(cost(remaining), cost(solved.orderedIds)) ? solved.orderedIds : remaining;
-  // Road distance of the houses still to deliver, from here, in the order they were in and in the order now.
-  const beforeM = plannedMeters({ stopIds: remaining, order: remaining, coordOf, matrixIdOf, start });
-  const afterM = plannedMeters({ stopIds: remaining, order: chosen, coordOf, matrixIdOf, start });
+  // When standing at the last house, the facing above is inferred from the tick order and can be wrong (parked across
+  // the street, zig-zag deliveries, few ticks to go on): a new order that's shorter under the inferred facing can be
+  // longer under the real one. So we check the saving under BOTH facings and only accept the new order when it's a
+  // worthwhile saving either way the car might be pointing. Without `at` (standing between houses) there is nothing to
+  // disambiguate, so the single start is checked as before.
+  const startsToCheck: StartSpec[] = at
+    ? ([0, 1] as const).map((f) => ({ kind: "gps", coord: here, at: { houseId: at.houseId, facing: f } }))
+    : [start];
+  const costOf = (s: StartSpec, order: readonly string[]) => orderCost({ stopIds: order, order, coordOf, matrixIdOf, start: s });
+  const chosen = startsToCheck.every((s) => worthChanging(costOf(s, remaining), costOf(s, solved.orderedIds)))
+    ? solved.orderedIds
+    : remaining;
+  // Road distance of the houses still to deliver, reported at the worse facing so the saving the UI shows holds up
+  // whichever way the car is pointing.
+  const metersFor = (order: readonly string[]) =>
+    Math.max(...startsToCheck.map((s) => plannedMeters({ stopIds: remaining, order, coordOf, matrixIdOf, start: s })));
+  const beforeM = metersFor(remaining);
+  const afterM = metersFor(chosen);
   return { orderedIds: [...doneInOrder, ...chosen, ...hidden], stops: remaining.length, beforeM, afterM };
 }
 
@@ -339,7 +381,7 @@ export function useShift() {
     const s = stateRef.current;
     if (!s) throw new Error("No shift in progress.");
     await nextFrame();
-    const plan = planReroute(s.orderedIds, s.deliveredIds, stoppedIds, here, coordLookup(), matrixLookup(), s.startCoord);
+    const plan = planReroute(s.orderedIds, s.deliveredIds, stoppedIds, here, coordLookup(), matrixLookup(), s.startCoord, s.headingAt);
     setState((prev) => {
       if (!prev) return prev;
       const note: Optimization = { at: Date.now(), kind: "reroute", houses: plan.stops, beforeM: plan.beforeM, afterM: plan.afterM };
@@ -360,9 +402,18 @@ export function useShift() {
   }, []);
 
   const markDelivered = useCallback(async (id: string) => {
+    const s = stateRef.current;
+    const now = Date.now();
+    // Read the car's heading from the shift's GPS trail; tracking.ts writes every ~5 s. A missing or stale
+    // heading (long stop, no fix) returns null and the tick stores no heading for this house.
+    let heading: number | null = null;
+    if (s && s.startedAt !== null) {
+      try { heading = headingBefore(await trackedPoints(s.startedAt), now); }
+      catch { heading = null; }
+    }
     setState((prev) => {
       if (!prev) return prev;
-      const next = markDeliveredState(prev, id, Date.now());
+      const next = markDeliveredState(prev, id, now, heading);
       if (next === prev) return prev;
       void saveShift(next);
       return next;

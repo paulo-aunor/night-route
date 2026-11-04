@@ -16,7 +16,13 @@ const POINTS = "@rr/track/points/";   // + shift id (its start time)
 const ACTIVE = "@rr/track/active";    // id of the shift being recorded
 const LAST_ERROR = "@rr/track/error";
 
-export type TrackPoint = { t: number; lat: number; lng: number; acc: number | null };
+export type TrackPoint = {
+  t: number; lat: number; lng: number; acc: number | null;
+  // Compass degrees from north, from the fix when the phone is moving (Android reports -1 when standing still).
+  // Null when the fix didn't carry one, or a device that doesn't supply it. Used at Re-route to tell which way
+  // the car was pointing at the last tick, without having to infer it from the tick order (src/lib/shift.ts).
+  hd?: number | null;
+};
 
 const MAX_ACCURACY_M = 50;     // fixes less accurate than this are ignored
 const MAX_SPEED_MS = 45;       // 162 km/h; a faster jump between fixes is a GPS glitch
@@ -57,6 +63,21 @@ export function trackProfile(points: readonly TrackPoint[]): { profile: { t: num
   return { profile, dropped };
 }
 
+// The most recent compass heading recorded at or before `t` (compass degrees, 0-360). Fixes without a
+// heading (the phone was standing still) are skipped. Returns null when nothing in the last `withinMs` ms
+// carried one, so a tick after a long pause doesn't get stamped with a stale direction.
+export function headingBefore(points: readonly TrackPoint[], t: number, withinMs = 60_000): number | null {
+  let best: TrackPoint | null = null;
+  for (const p of points) {
+    if (p.t > t) continue;
+    if (p.hd == null) continue;
+    if (p.acc !== null && p.acc > 50) continue;
+    if (best === null || p.t > best.t) best = p;
+  }
+  if (best === null || t - best.t > withinMs) return null;
+  return best.hd as number;
+}
+
 // Metres moved by time `t`, from a profile: the figure at the last fix at or before it.
 export function metersAt(profile: readonly { t: number; m: number }[], t: number): number {
   let lo = 0, hi = profile.length - 1, best = 0;
@@ -95,7 +116,11 @@ TaskManager.defineTask(TRACK_TASK, async ({ data, error }) => {
     const active = await AsyncStorage.getItem(ACTIVE);
     if (active === null) return;
     const { locations } = data as { locations: Location.LocationObject[] };
-    await appendPoints(Number(active), locations.map((l) => ({ t: l.timestamp, lat: l.coords.latitude, lng: l.coords.longitude, acc: l.coords.accuracy })));
+    await appendPoints(Number(active), locations.map((l) => ({
+      t: l.timestamp, lat: l.coords.latitude, lng: l.coords.longitude, acc: l.coords.accuracy,
+      // Android returns -1 when the phone isn't moving fast enough to tell; store that as null.
+      hd: l.coords.heading == null || l.coords.heading < 0 ? null : l.coords.heading,
+    })));
     // Each fix is also a chance to tell the driver they are near the next house. A failure there is not a GPS failure.
     const last = locations[locations.length - 1];
     if (last) await checkNearHouse({ lat: last.coords.latitude, lng: last.coords.longitude }).catch(recordAlertError);

@@ -151,7 +151,13 @@ async function deliverFromNotification(houseId: string, shiftId: number | undefi
   const s = await loadActiveShift();
   if (s === null || s.startedAt === null || (shiftId !== undefined && shiftId !== s.startedAt)) return;
   if (!s.orderedIds.includes(houseId)) return;
-  const next = markDeliveredState(s, houseId, Date.now());
+  const now = Date.now();
+  let heading: number | null = null;
+  try {
+    const { headingBefore, trackedPoints } = await import("./tracking");
+    if (s.startedAt !== null) heading = headingBefore(await trackedPoints(s.startedAt), now);
+  } catch { heading = null; }
+  const next = markDeliveredState(s, houseId, now, heading);
   if (next === s) return;
   await saveShift(next);
   announceShiftChanged();

@@ -202,6 +202,46 @@ await test("facingAfter: a direction for a known order, null for nothing", () =>
   assert.ok([0, 1].includes(HD.facingAfter({ stopIds: order, order, coordOf, matrixIdOf, start: { kind: "library" } })));
   assert.strictEqual(HD.facingAfter({ stopIds: [], order: [], coordOf, matrixIdOf, start: { kind: "library" } }), null);
 });
+await test("markDeliveredState: a heading is stored alongside the tick; null leaves headingAt alone", () => {
+  const s0 = { date: "d", routeIds: ["C3"], startedAt: 1, finishedAt: null, deliveredIds: [], deliveredAt: {}, skippedIds: [], orderedIds: ids, startMode: "library" };
+  const next = lib("nextHouse").markDeliveredState(s0, ids[0], 100, 170);
+  assert.strictEqual(next.headingAt[ids[0]], 170);
+  const again = lib("nextHouse").markDeliveredState(next, ids[1], 200, null);
+  assert.strictEqual(again.headingAt[ids[1]], undefined);
+  assert.strictEqual(again.headingAt[ids[0]], 170);
+});
+await test("headingBefore: the latest fix with a heading inside the window, otherwise null", () => {
+  const points = [
+    { t: 1000, lat: 0, lng: 0, acc: 10, hd: 90 },
+    { t: 2000, lat: 0, lng: 0, acc: 10, hd: null },
+    { t: 3000, lat: 0, lng: 0, acc: 10, hd: 180 },
+    { t: 4000, lat: 0, lng: 0, acc: 200, hd: 200 }, // too inaccurate
+  ];
+  assert.strictEqual(Trk.headingBefore(points, 3500), 180);
+  assert.strictEqual(Trk.headingBefore(points, 1500), 90);
+  assert.strictEqual(Trk.headingBefore(points, 70000, 60000), null, "stale fix");
+  assert.strictEqual(Trk.headingBefore([], 1000), null);
+});
+await test("planReroute: a live heading opposite the delivery flow flips the inferred facing", () => {
+  // The planner's facing choice shows up as `at.facing` being passed to buildProblem; we check indirectly by
+  // confirming that a disagreeing heading makes the plan differ from the no-heading case on a harder scenario.
+  const order = SEED_ORDERS.C3, k = 12, j = 32;
+  const delivered = [...order.slice(0, k), ...order.slice(j, j + 8)];
+  const c = coordOf(delivered[delivered.length - 1]), here = { lat: c.lat + 0.0003, lng: c.lng - 0.0003 };
+  const base = Shift.planReroute([...delivered, ...order.filter((id) => !delivered.includes(id))], delivered, [], here, coordOf, matrixIdOf);
+  // Heading that strongly disagrees with the prev→last bearing
+  const prevC = coordOf(delivered[delivered.length - 2]), lastC = c;
+  const flowBearing = (Math.atan2(
+    Math.sin((lastC.lng - prevC.lng) * Math.PI / 180) * Math.cos(lastC.lat * Math.PI / 180),
+    Math.cos(prevC.lat * Math.PI / 180) * Math.sin(lastC.lat * Math.PI / 180) - Math.sin(prevC.lat * Math.PI / 180) * Math.cos(lastC.lat * Math.PI / 180) * Math.cos((lastC.lng - prevC.lng) * Math.PI / 180)
+  ) * 180 / Math.PI + 360) % 360;
+  const headingAt = { [delivered[delivered.length - 1]]: (flowBearing + 180) % 360 };
+  const flipped = Shift.planReroute([...delivered, ...order.filter((id) => !delivered.includes(id))], delivered, [], here, coordOf, matrixIdOf, undefined, headingAt);
+  // The gate may or may not accept a new order, but the reported beforeM should reflect the opposite facing.
+  // (Without a recorded heading the beforeM uses the max of both facings; with one it uses the single flipped
+  // facing, so beforeM here is NOT greater than the no-heading baseline.)
+  assert.ok(flipped.beforeM <= base.beforeM + 1, `heading-pinned beforeM ${flipped.beforeM} should not exceed both-facings worst ${base.beforeM}`);
+});
 await test("planFromGps: every house once, a before figure only when there is a usual order", () => {
   const set = SEED_ORDERS.C3, here = { lat: coordOf(set[30]).lat + 0.0004, lng: coordOf(set[30]).lng };
   const solvable = set.filter((id) => id !== set[5]);

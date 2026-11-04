@@ -37,11 +37,15 @@
       "typedRoutes": true
     },
     "extra": {
-      "router": {}
+      "router": {},
+      "eas": {
+        "projectId": "fd5da642-d0e0-4f7c-8fa2-ab5365b06822"
+      }
     },
     "runtimeVersion": {
       "policy": "appVersion"
     },
-    "ios": {}
+    "ios": {},
+    "owner": "pauloaunor"
   }
 }

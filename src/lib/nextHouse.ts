@@ -21,12 +21,15 @@ export function stopsLeft(s: ShiftState, paused: PausedMap, houses: ReadonlyMap<
 }
 
 // Ticking a house, whether in the app or from a notification. Ticking one already ticked changes nothing.
-export function markDeliveredState(s: ShiftState, id: string, now: number): ShiftState {
+// `heading` is the compass direction the car was pointing at this moment (degrees from north), or null when the
+// GPS trail didn't have one. It is stored for Re-route to use later; the function itself doesn't interpret it.
+export function markDeliveredState(s: ShiftState, id: string, now: number, heading: number | null = null): ShiftState {
   if (s.deliveredIds.includes(id)) return s;
   return {
     ...s,
     deliveredIds: [...s.deliveredIds, id],
     deliveredAt: { ...s.deliveredAt, [id]: now },
+    headingAt: heading == null ? s.headingAt : { ...s.headingAt, [id]: heading },
     skippedIds: s.skippedIds.filter((x) => x !== id),
   };
 }
