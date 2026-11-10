@@ -182,7 +182,9 @@ async function deliverFromNotification(houseId: string, shiftId: number | undefi
 type ActionData = { houseId?: string; shift?: number };
 
 export async function handleAction(response: Notifications.NotificationResponse): Promise<void> {
-  const { houseId, shift } = response.notification.request.content.data as ActionData;
+  // Only the two buttons need the house. Tapping a notification's body is also a "response", and the nightly reminder
+  // (like anything else with no data) has none, so `data` can be missing.
+  const { houseId, shift } = (response.notification.request.content.data ?? {}) as ActionData;
   if (response.actionIdentifier === ACTION_DONE) {
     if (!houseId) throw new Error("The notification has no house in it.");
     await deliverFromNotification(houseId, shift);

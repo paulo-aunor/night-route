@@ -800,6 +800,20 @@ await test("the background task stores its failures for the shift screen instead
   assert.match(await Al.lastAlertError(), /no house in it/);
   assert.deepStrictEqual(notif.registeredTasks, ["rr-notification-action"], "the task is registered with the library at import");
 });
+await test("tapping a notification that carries no data (the nightly reminder) is not an error; Delivered or Navigate without a house still is", async () => {
+  resetAlerts();
+  const bare = (action, content) => ({ actionIdentifier: action, notification: { date: 99, request: { identifier: "rr-remind-1", content } } });
+  const tap = "expo.modules.notifications.actions.DEFAULT";
+  for (const content of [{ title: "Mon night: time to start", body: "Tue paper." }, { title: "t", body: "b", data: undefined }, { title: "t", body: "b", data: null }, { title: "t", body: "b", data: {} }]) {
+    await Al.handleAction(bare(tap, content));
+    await Al.handleLaunchResponse(bare(tap, content));
+  }
+  assert.strictEqual(await Al.lastAlertError(), null);
+  await assert.rejects(Al.handleAction(bare("delivered", { title: "t", body: "b" })), /no house in it/);
+  await assert.rejects(Al.handleAction(bare("navigate", { title: "t", body: "b", data: null })), /no house in it/);
+  await tasks["rr-notification-action"]({ data: bare(tap, { title: "t", body: "b" }), error: null });
+  assert.strictEqual(await Al.lastAlertError(), null, "the background task takes it too");
+});
 await test("Navigate opens Google Maps for that house; the same press is handled once", async () => {
   resetAlerts();
   const r = press("navigate", ids[2], 1, 777);
