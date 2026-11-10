@@ -289,9 +289,11 @@ export default function Shift() {
           <Text style={styles.headerStat}>{formatMoney(delivered.length * rateCents)} of {formatMoney(stops.length * rateCents)}</Text>
           <Text style={styles.headerStat}>{formatElapsed(elapsed)}</Text>
         </View>
-        {distances.value && (
+        {(gps.drivenM !== null || distances.value) && (
           <Text style={styles.headerSub}>
-            {kmText(distances.value.coveredM)} covered of {kmText(distances.value.plannedM)} planned
+            {gps.drivenM !== null
+              ? `Actually moved (GPS): ${kmText(gps.drivenM)}${distances.value ? ` · planned for all houses: ${kmText(distances.value.plannedM)}` : ""}`
+              : `Estimated ${kmText(distances.value?.coveredM ?? 0)} of ${kmText(distances.value?.plannedM ?? 0)} planned (no GPS reading yet)`}
             {savedM > 50 ? ` · saved ${kmText(savedM)}, ${minText(savedM)} by optimizing` : ""}
           </Text>
         )}
@@ -302,7 +304,7 @@ export default function Shift() {
           </Pressable>
         )}
         {gps.on ? (
-          <Text style={styles.headerSub}>GPS: {kmText(gps.drivenM ?? 0)} moved so far{gps.error ? ` · ${gps.error}` : ""}</Text>
+          <Text style={styles.headerSub}>GPS recording is on{gps.drivenM === null ? ", waiting for a fix" : ""}{gps.error ? ` · ${gps.error}` : ""}</Text>
         ) : (
           <Pressable onPress={turnOnGps} hitSlop={8}>
             <Text style={styles.headerWarn}>GPS recording is off{gps.error ? `: ${gps.error}` : ""}. Tap to turn it on.</Text>

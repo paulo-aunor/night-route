@@ -36,20 +36,33 @@ export function markDeliveredState(s: ShiftState, id: string, now: number, headi
 
 // ---- the "you're near the next house" alert ----
 
-export const NEAR_M = 100;
+export const NEAR_M = 100;         // road distance to the next house at which the alert fires
+export const NEAR_LOOK_M = 150;    // straight-line distance at which the road distance is asked for
+export const LOOK_EVERY_MS = 20_000;
+export const MAX_LOOKS = 3;        // road-distance lookups for one approach to one house
 
-export type NearState = { shift: number; houseId: string; outside: boolean; alerted: boolean };
+export type NearState = { shift: number; houseId: string; outside: boolean; alerted: boolean; looks: number; lookedAt: number };
 
-// One GPS fix. The alert fires once per next house, when the car comes inside NEAR_M from outside it. A next house
-// that is already inside NEAR_M when it becomes next (the one two doors down) does not alert, so a street of
-// houses gives one alert on arrival, not one per door.
-export function nearStep(prev: NearState | null, shift: number, houseId: string, distM: number): { state: NearState; alert: boolean } {
+// One GPS fix. The straight line is only a cheap first filter: when the car is within NEAR_LOOK_M of the next house
+// after being further away, the road distance is looked up (`lookup`), and nearResolve decides from it. A house on a
+// parallel street is close on the line and far by road, so the lookup repeats (up to MAX_LOOKS, every LOOK_EVERY_MS)
+// while the car stays close. A next house that is already close when it becomes next (the one two doors down) is
+// never looked up, so a street of houses gives one alert on arrival, not one per door.
+export function nearStep(prev: NearState | null, shift: number, houseId: string, straightM: number, now: number): { state: NearState; lookup: boolean } {
   const st: NearState = prev && prev.shift === shift && prev.houseId === houseId
     ? prev
-    : { shift, houseId, outside: distM > NEAR_M, alerted: false };
-  if (distM > NEAR_M) return { state: { ...st, outside: true }, alert: false };
-  if (st.outside && !st.alerted) return { state: { ...st, outside: false, alerted: true }, alert: true };
-  return { state: { ...st, outside: false }, alert: false };
+    : { shift, houseId, outside: straightM > NEAR_LOOK_M, alerted: false, looks: 0, lookedAt: 0 };
+  if (straightM > NEAR_LOOK_M) return { state: { ...st, outside: true, looks: 0 }, lookup: false };
+  if (st.outside && !st.alerted && st.looks < MAX_LOOKS && now - st.lookedAt >= LOOK_EVERY_MS) {
+    return { state: { ...st, looks: st.looks + 1, lookedAt: now }, lookup: true };
+  }
+  return { state: st, lookup: false };
+}
+
+// The road distance came back: alert if it is within NEAR_M. A null (no drivable road between them) never alerts.
+export function nearResolve(state: NearState, roadM: number | null): { state: NearState; alert: boolean } {
+  if (roadM !== null && roadM <= NEAR_M) return { state: { ...state, outside: false, alerted: true }, alert: true };
+  return { state, alert: false };
 }
 
 // What the notification says about a house.

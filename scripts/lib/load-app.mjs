@@ -17,7 +17,7 @@ export function loadApp(extraEntries = []) {
   // ---- compile ----
 
   const entries = ["lib/shift", "lib/importRoute", "lib/history", "lib/settings", "lib/schedule", "lib/headingData", "lib/headingSearch",
-    "lib/mergeOrder", "lib/tracking", "lib/houseSearch", "lib/addHouse", "lib/geocode", "lib/reopen", "lib/registry", "lib/registry-core", "data/routes", "lib/alerts", "lib/nextHouse", "lib/reminders", "lib/shiftEvents", "lib/notes", "lib/navigation", "data/cut-through", "lib/matrixAlias", "data/seed-orders", "data/subscribers", "data/anchors"].map((f) => path.join(ROOT, "src", f + ".ts"));
+    "lib/mergeOrder", "lib/tracking", "lib/houseSearch", "lib/addHouse", "lib/geocode", "lib/reopen", "lib/registry", "lib/registry-core", "data/routes", "lib/alerts", "lib/nextHouse", "lib/reminders", "lib/shiftEvents", "lib/notes", "lib/navigation", "lib/driving", "lib/archive", "lib/roads", "lib/roadSnap", "data/cut-through", "lib/matrixAlias", "data/seed-orders", "data/subscribers", "data/anchors"].map((f) => path.join(ROOT, "src", f + ".ts"));
   fs.writeFileSync(path.join(OUT, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
       target: "es2020", module: "commonjs", moduleResolution: "node", resolveJsonModule: true, esModuleInterop: true,
@@ -70,10 +70,21 @@ export function loadApp(extraEntries = []) {
     addNotificationResponseReceivedListener: () => ({ remove() {} }),
     useLastNotificationResponse: () => null,
   };
+  // file system: files and folders in memory; a write into a folder that was never made fails, as on the phone
+  const files = {}, dirs = new Set(["file:///cache/"]);
+  const fileSystem = {
+    documentDirectory: "file:///doc/", cacheDirectory: "file:///cache/", files, dirs,
+    getInfoAsync: async (u) => ({ exists: dirs.has(u) || u in files }),
+    makeDirectoryAsync: async (u) => { dirs.add(u); },
+    writeAsStringAsync: async (u, text) => { const parent = u.slice(0, u.lastIndexOf("/") + 1); if (!dirs.has(parent)) throw new Error("no such folder: " + parent); files[u] = text; },
+    readAsStringAsync: async (u) => { if (!(u in files)) throw new Error("no such file: " + u); return files[u]; },
+    readDirectoryAsync: async (u) => Object.keys(files).filter((f) => f.startsWith(u) && !f.slice(u.length).includes("/")).map((f) => f.slice(u.length)),
+    deleteAsync: async (u, o) => { if (!(u in files) && !(o && o.idempotent)) throw new Error("no such file: " + u); delete files[u]; },
+  };
   // react-native: only the parts the app's logic files touch
   const rn = { opened: [] };
   const reactNative = { Platform: { OS: "android" }, Linking: { canOpenURL: async () => true, openURL: async (u) => { rn.opened.push(u); } }, AppState: { addEventListener: () => ({ remove() {} }) } };
-  const stubs = { "@react-native-async-storage/async-storage": asyncStorage, "expo-location": loc, "expo-task-manager": taskManager, "expo-notifications": notif, "react-native": reactNative };
+  const stubs = { "@react-native-async-storage/async-storage": asyncStorage, "expo-location": loc, "expo-task-manager": taskManager, "expo-notifications": notif, "react-native": reactNative, "expo-file-system/legacy": fileSystem };
 
   const SRC = path.join(OUT, "js/src");
   const resolveFilename = Module._resolveFilename;
@@ -95,5 +106,5 @@ export function loadApp(extraEntries = []) {
   const data = (n) => require(path.join(SRC, "data", n + ".js"));
 
 
-  return { ROOT, store, loc, tasks, notif, rn, lib, data, cleanup: () => fs.rmSync(OUT, { recursive: true, force: true }) };
+  return { ROOT, store, loc, tasks, notif, rn, fileSystem, lib, data, cleanup: () => fs.rmSync(OUT, { recursive: true, force: true }) };
 }

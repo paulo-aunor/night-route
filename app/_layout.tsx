@@ -41,6 +41,7 @@ export default function RootLayout() {
           <Stack.Screen name="add-house" options={{ title: "Add a house" }} />
           <Stack.Screen name="earnings" options={{ title: "Earnings and reports" }} />
           <Stack.Screen name="reminders" options={{ title: "Notifications" }} />
+          <Stack.Screen name="review" options={{ title: "How it was driven" }} />
         </Stack>
       </SafeAreaProvider>
     </GestureHandlerRootView>

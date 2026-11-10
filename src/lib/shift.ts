@@ -5,6 +5,8 @@ import { SEED_ORDERS } from "@/data/seed-orders";
 import { isAtLibrary } from "./location";
 import { loadPaused } from "./paused";
 import { facingAfter, insertStops, legMeters, orderCost, orderStops, plannedMeters, type StartSpec } from "./headingData";
+import { analyzeArchive, buildArchive, saveArchive } from "./archive";
+import { summarize } from "./driving";
 import { appendRecord, buildRecord, routeBreakdown, type Leg } from "./history";
 import { matrixIdOfHouse } from "./matrixAlias";
 import { mergeOrder } from "./mergeOrder";
@@ -280,7 +282,13 @@ export async function recordShift(s: ShiftState): Promise<void> {
   const profile = points.length === 0 ? null : trackProfile(points).profile;
   const finishedAt = Date.now();
   const routeStats = routeBreakdown({ startedAt: s.startedAt, finishedAt, legs, drivenAt: profile ? (t) => metersAt(profile, t) : null });
+  // Everything the review needs is kept in a file of its own: the track, the houses, the plan and the ticks.
+  const archive = buildArchive(s, {
+    points, finishedAt, stoppedIds,
+    houses: s.orderedIds.flatMap((id) => { const h = subs.get(id); return h ? [{ id, routeId: h.routeId, address: h.address, lat: h.lat, lng: h.lng }] : []; }),
+  });
   await appendRecord(buildRecord(s, {
+    driving: points.length === 0 ? undefined : summarize(analyzeArchive(archive)),
     stoppedIds,
     rateCents,
     plannedM,
@@ -290,6 +298,7 @@ export async function recordShift(s: ShiftState): Promise<void> {
     finishedAt,
     routeOf: (id) => subs.get(id)?.routeId,
   }));
+  if (points.length > 0) await saveArchive(archive);
   await stopTracking(s.startedAt, true);   // only once the shift is safely recorded; the points stay in case it is reopened
   await saveClosed(s, finishedAt);
 }
@@ -369,6 +378,7 @@ export function useShift() {
       ...newShift(todayKey(), routeIds, orderedIds, dayIdx, fromGps ? "gps" : "library"),
       startCoord: fromGps ? startCoord : undefined,
       optimizations,
+      startOrder: [...orderedIds],
     };
     await saveShift(s);
     setState(s);

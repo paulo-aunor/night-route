@@ -5,6 +5,7 @@ import { LIBRARY } from "@/data/routes";
 import { getCurrentCoord } from "@/lib/location";
 import { usePaused } from "@/lib/paused";
 import { canReopen, loadClosed, type ClosedShift } from "@/lib/reopen";
+import { snapPendingShifts } from "@/lib/roadSnap";
 import { countByRoute, countByRouteOn, managedRoutes, registry, useRegistry, visibleRoutes } from "@/lib/registry";
 import { DAY_NAMES, NIGHT_INDEXES, nightOfPaperDay, paperDayIndex, paperDayOfNight } from "@/lib/schedule";
 import { formatMoney, useRate } from "@/lib/settings";
@@ -74,6 +75,8 @@ export default function Home() {
   useFocusEffect(useCallback(() => {
     loadClosed().then(setClosed).catch((e: unknown) =>
       Alert.alert("Couldn't read the last ended shift", e instanceof Error ? e.message : String(e)));
+    // Shifts ended since last time get their distance measured along roads (it never throws; Earnings shows a failure).
+    void snapPendingShifts();
   }, []));
   const onReopen = async () => {
     try {

@@ -59,7 +59,20 @@ export function findRoadTwin(
   return best;
 }
 
-export function buildHouse(input: NewHouseInput, coord: { lat: number; lng: number }, now: number, roadTwin?: string): Subscriber {
+// The houses nearest a point, for the road distances looked up when a new house has no twin.
+export function nearestHouses(coord: { lat: number; lng: number }, houses: readonly Subscriber[], k = 12, maxM = 1500): Subscriber[] {
+  return houses
+    .map((h) => ({ h, m: haversineM(coord, h) }))
+    .filter((x) => x.m <= maxM)
+    .sort((a, b) => a.m - b.m)
+    .slice(0, k)
+    .map((x) => x.h);
+}
+
+export function buildHouse(
+  input: NewHouseInput, coord: { lat: number; lng: number }, now: number, roadTwin?: string,
+  roads?: { out: Record<string, number>; in: Record<string, number>; fromLibrary: number | null },
+): Subscriber {
   const c = cleanHouseInput(input);
   return {
     id: newHouseId(c.routeId, now),
@@ -72,5 +85,6 @@ export function buildHouse(input: NewHouseInput, coord: { lat: number; lng: numb
     lat: coord.lat,
     lng: coord.lng,
     ...(roadTwin ? { roadTwin } : {}),
+    ...(roads ? { roadOut: roads.out, roadIn: roads.in, ...(roads.fromLibrary !== null ? { roadLib: roads.fromLibrary } : {}) } : {}),
   };
 }

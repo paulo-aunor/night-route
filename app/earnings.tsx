@@ -1,12 +1,16 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
+import * as Sharing from "expo-sharing";
 import {
-  addDays, deleteRecord, delivered, duePayCents, kmText, minText, nightLabel, nightOf, nightRecords, paperLabel, payCents,
+  addDays, deleteRecord, delivered, distanceComparison, drivingTotals, movedOf, duePayCents, kmText, minText, nightLabel, nightOf, nightRecords, paperLabel, payCents,
   routeTotals, totalsOf, useHistory, weekLabel, weekReport, weekStart, type ShiftRecord, type Totals,
 } from "@/lib/history";
 import { usePaused } from "@/lib/paused";
+import { deleteArchive, exportArchives } from "@/lib/archive";
+import { durationText, kmhText, moreThanPlannedText } from "@/lib/drivingText";
 import { forgetClosed } from "@/lib/reopen";
+import { lastRoadError, shiftsWaitingForRoads, snapPendingShifts } from "@/lib/roadSnap";
 import { formatMoney, parseDollars, useRate } from "@/lib/settings";
 import { useShift } from "@/lib/shift";
 
@@ -36,8 +40,9 @@ function Line({ label, value, note }: { label: string; value: string; note?: str
   );
 }
 
-function TotalsCard({ title, t, before }: { title: string; t: Totals; before?: Totals | null }) {
+function TotalsCard({ title, t, before, records }: { title: string; t: Totals; before?: Totals | null; records: readonly ShiftRecord[] }) {
   const vs = before && before.shifts > 0 ? before : null;
+  const cmp = distanceComparison(records);
   const planned = t.plannedM === null ? "n/a" : kmText(t.plannedM) + (t.plannedPartial ? " (some shifts not planned)" : "");
   return (
     <View style={styles.card}>
@@ -63,17 +68,28 @@ function TotalsCard({ title, t, before }: { title: string; t: Totals; before?: T
         note={vs ? change(t.centsPerHour, vs.centsPerHour, formatMoney) : null}
       />
       <Line
-        label="Distance moved (GPS)"
+        label={`Distance actually moved ${t.recordedShifts === 0 ? "" : t.roadShifts === t.recordedShifts ? "(along roads)" : t.roadShifts === 0 ? "(straight between GPS fixes)" : `(${t.roadShifts} of ${t.recordedShifts} shifts along roads)`}`}
         value={t.drivenM === null ? "not recorded" : kmText(t.drivenM) + (t.drivenPartial ? " (some shifts not recorded)" : "")}
         note={vs ? change(t.drivenM, vs.drivenM, kmText) : null}
       />
-      <Line
-        label="Distance covered (estimate)"
-        value={t.coveredM === null ? "n/a" : kmText(t.coveredM) + (t.coveredPartial ? " (some shifts not measured)" : "")}
-        note={vs ? change(t.coveredM, vs.coveredM, kmText) : null}
-      />
-      <Line label="Distance per house" value={t.kmPerHouse === null ? "n/a" : `${(t.kmPerHouse * 1000).toFixed(0)} m`} note={vs && t.kmPerHouse !== null && vs.kmPerHouse !== null ? change(t.kmPerHouse * 1000, vs.kmPerHouse * 1000, (n) => `${n.toFixed(0)} m`) : null} />
-      <Line label="Planned road distance" value={planned} note={vs ? change(t.plannedM, vs.plannedM, kmText) : null} />
+      {t.drivenM !== null && (
+        <Line
+          label="Planned road distance, for comparison"
+          value={cmp ? kmText(cmp.plannedM) : "n/a"}
+          note={cmp ? `${moreThanPlannedText(cmp.movedM, cmp.plannedM)}${cmp.shifts < t.shifts ? `, ${cmp.shifts} of ${t.shifts} shifts` : ""}` : null}
+        />
+      )}
+      {t.drivenM === null && (
+        <>
+          <Line label="Planned road distance" value={planned} note={vs ? change(t.plannedM, vs.plannedM, kmText) : null} />
+          <Line
+            label="Estimated distance (no GPS, not measured)"
+            value={t.coveredM === null ? "n/a" : kmText(t.coveredM) + (t.coveredPartial ? " (some shifts not measured)" : "")}
+            note={vs ? change(t.coveredM, vs.coveredM, kmText) : null}
+          />
+        </>
+      )}
+      <Line label="Road distance per house (estimate)" value={t.kmPerHouse === null ? "n/a" : `${(t.kmPerHouse * 1000).toFixed(0)} m`} note={vs && t.kmPerHouse !== null && vs.kmPerHouse !== null ? change(t.kmPerHouse * 1000, vs.kmPerHouse * 1000, (n) => `${n.toFixed(0)} m`) : null} />
       <Line
         label="Saved by optimizing"
         value={t.optimizations === 0 ? "none" : t.savedM > 50 ? `${kmText(t.savedM)}, ${minText(t.savedM)}` : "no saving"}
@@ -123,21 +139,46 @@ function RouteTable({ title, records }: { title: string; records: readonly Shift
   );
 }
 
-function ShiftRow({ r, onRemove }: { r: ShiftRecord; onRemove: (r: ShiftRecord) => void }) {
+// What the GPS track says about how the shifts were driven, added up. Only shifts that were recorded count.
+function DrivingCard({ records }: { records: readonly ShiftRecord[] }) {
+  const d = drivingTotals(records);
+  if (d.shifts === 0) return null;
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>How you drove</Text>
+      <Line label="Shifts with a GPS recording" value={`${d.shifts} of ${records.length}`} />
+      <Line label="Houses driven past before delivered" value={String(d.passedHouses)} note={d.passes > d.passedHouses ? `${d.passes} passes in all` : null} />
+      <Line label="Houses delivered out of the planned order" value={d.outOfOrderShifts === 0 ? "n/a" : String(d.outOfOrder)} />
+      <Line label="Stops of 20 s or more" value={String(d.stops)} note={`${durationText(d.stoppedS)} standing`} />
+      <Line label="Top speed" value={kmhText(d.topKmh)} note={d.aboveLimitS > 0 ? `${durationText(d.aboveLimitS)} over 50 km/h` : null} />
+      <Line label="Hard braking, hard acceleration" value={`${d.hardBrakes}, ${d.hardAccels}`} />
+      <Text style={styles.hint}>Tap "Review how it was driven" under a shift for the detail. GPS is a few metres off and fixes come about every 5 s, so these are close, not exact.</Text>
+    </View>
+  );
+}
+
+function ShiftRow({ r, onRemove, onReview }: { r: ShiftRecord; onRemove: (r: ShiftRecord) => void; onReview: (r: ShiftRecord) => void }) {
   const hours = (r.finishedAt - r.startedAt) / 3_600_000;
   return (
     <View style={styles.shiftRow}>
       <Text style={styles.shiftRoutes}>{r.routeIds.join(" · ")}</Text>
       <Text style={styles.shiftMeta}>
         {delivered(r)} of {r.due} delivered · {formatMoney(payCents(r))} of {formatMoney(duePayCents(r))} · {hoursText(hours)}
-        {r.drivenM !== null ? ` · ${kmText(r.drivenM)} moved (GPS)` : ""}
-        {r.coveredM !== null ? ` · ${kmText(r.coveredM)} covered` : ""}
-        {r.plannedM !== null ? ` · ${kmText(r.plannedM)} planned` : ""}
+        {movedOf(r) !== null
+          ? ` · ${kmText((movedOf(r) as { m: number }).m)} actually moved (${(movedOf(r) as { onRoads: boolean }).onRoads ? "along roads" : "GPS fixes"})${r.plannedM !== null ? ` vs ${kmText(r.plannedM)} planned` : ""}`
+          : `${r.coveredM !== null ? ` · about ${kmText(r.coveredM)} (estimate, no GPS)` : ""}${r.plannedM !== null ? ` · ${kmText(r.plannedM)} planned` : ""}`}
         {r.savedM > 50 ? ` · saved ${kmText(r.savedM)}` : ""}
       </Text>
-      <Pressable onPress={() => onRemove(r)} hitSlop={8}>
-        <Text style={styles.removeText}>Remove from reports</Text>
-      </Pressable>
+      <View style={styles.rowLinks}>
+        {r.driving && (
+          <Pressable onPress={() => onReview(r)} hitSlop={8}>
+            <Text style={styles.linkText}>Review how it was driven</Text>
+          </Pressable>
+        )}
+        <Pressable onPress={() => onRemove(r)} hitSlop={8}>
+          <Text style={styles.removeText}>Remove from reports</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -151,7 +192,41 @@ export default function Earnings() {
   const [weekBack, setWeekBack] = useState(0);
   const [rateText, setRateText] = useState<string | null>(null);
 
-  useFocusEffect(useCallback(() => { history.reload(); }, [history.reload]));
+  // Shifts ended since the last time are measured along roads when there is signal, then the figures reload.
+  const [road, setRoad] = useState<{ running: boolean; step: string | null; error: string | null }>({ running: false, step: null, error: null });
+  const measuring = useRef(false);
+  const measureRoads = useCallback(async () => {
+    if (measuring.current) return;
+    measuring.current = true;
+    try {
+      if ((await shiftsWaitingForRoads()) === 0) { setRoad({ running: false, step: null, error: await lastRoadError() }); return; }
+      setRoad({ running: true, step: null, error: null });
+      const report = await snapPendingShifts(undefined, (n, of) => setRoad({ running: true, step: `${n} of ${of}`, error: null }));
+      setRoad({ running: false, step: null, error: report.error });
+      history.reload();
+    } finally {
+      measuring.current = false;
+    }
+  }, [history.reload]);
+  useFocusEffect(useCallback(() => { history.reload(); void measureRoads(); }, [history.reload, measureRoads]));
+
+  const router = useRouter();
+  const openReview = (r: ShiftRecord) => router.push({ pathname: "/review", params: { id: r.id } } as never);
+
+  // Every kept shift (GPS track, houses, plan, ticks) as one file, to share out of the app.
+  const exportData = async () => {
+    try {
+      if (!(await Sharing.isAvailableAsync())) throw new Error("Sharing isn't available on this phone.");
+      const { uri, shifts } = await exportArchives(Date.now());
+      if (shifts === 0) {
+        Alert.alert("Nothing to export yet", "A shift keeps its GPS track and details when it ends with the recording on. None has been kept so far.");
+        return;
+      }
+      await Sharing.shareAsync(uri, { mimeType: "application/json", dialogTitle: "Night Route driving data" });
+    } catch (e) {
+      Alert.alert("Couldn't export the data", e instanceof Error ? e.message : String(e));
+    }
+  };
 
   // For a shift started by mistake. It stops counting in every total; there is no way to bring it back.
   const removeShift = (r: ShiftRecord) => {
@@ -166,6 +241,7 @@ export default function Earnings() {
           onPress: async () => {
             try {
               await deleteRecord(r.id);
+              await deleteArchive(r.id);
               await forgetClosed(r.id);
             } catch (e) {
               Alert.alert("Couldn't remove the shift", e instanceof Error ? e.message : String(e));
@@ -240,6 +316,13 @@ export default function Earnings() {
         <Text style={styles.hint}>A finished shift keeps the rate it was paid at, so changing this never rewrites old shifts.</Text>
       </View>
 
+      {road.running && <Text style={styles.hint}>Measuring the distance along roads{road.step ? `, shift ${road.step}` : ""}. Until then a shift shows the distance straight between GPS fixes.</Text>}
+      {road.error && !road.running && (
+        <Pressable onPress={() => void measureRoads()} hitSlop={8}>
+          <Text style={styles.removeText}>Couldn't measure along roads: {road.error} Tap to try again. Shifts show the distance straight between GPS fixes until then.</Text>
+        </Pressable>
+      )}
+
       <View style={styles.tabs}>
         {([["night", "Tonight"], ["week", "This week"]] as const).map(([key, label]) => (
           <Pressable key={key} style={[styles.tab, tab === key && styles.tabOn]} onPress={() => setTab(key)}>
@@ -262,9 +345,10 @@ export default function Earnings() {
           {done.length === 0 && !live && <Text style={styles.empty}>No shift recorded for this night yet.</Text>}
           {done.length > 0 && (
             <>
-              <TotalsCard title={`${paperLabel(done[0].paperDay)}, finished shifts`} t={nightTotals} />
+              <TotalsCard title={`${paperLabel(done[0].paperDay)}, finished shifts`} t={nightTotals} records={done} />
+              <DrivingCard records={done} />
               <RouteTable title="By route" records={done} />
-              {done.map((r) => <ShiftRow key={r.id} r={r} onRemove={removeShift} />)}
+              {done.map((r) => <ShiftRow key={r.id} r={r} onRemove={removeShift} onReview={openReview} />)}
             </>
           )}
         </>
@@ -282,7 +366,8 @@ export default function Earnings() {
           {week.nights.length === 0 && <Text style={styles.empty}>No finished shifts in this week.</Text>}
           {week.nights.length > 0 && (
             <>
-              <TotalsCard title="Week so far" t={week.totals} before={lastWeek.totals} />
+              <TotalsCard title="Week so far" t={week.totals} before={lastWeek.totals} records={week.nights.flatMap((n) => n.records)} />
+              <DrivingCard records={week.nights.flatMap((n) => n.records)} />
               {lastWeek.nights.length === 0 && <Text style={styles.hint}>No shifts the week before to compare with.</Text>}
               <RouteTable title="Week by route" records={week.nights.flatMap((n) => n.records)} />
               <Text style={styles.section}>By night</Text>
@@ -290,7 +375,7 @@ export default function Earnings() {
                 <View key={n.night} style={styles.card}>
                   <Text style={styles.cardTitle}>{nightLabel(n.night)} · {paperLabel(n.paperDay)}</Text>
                   <Text style={styles.nightPay}>{formatMoney(n.totals.payCents)} of {formatMoney(n.totals.duePayCents)} due</Text>
-                  {n.records.map((r) => <ShiftRow key={r.id} r={r} onRemove={removeShift} />)}
+                  {n.records.map((r) => <ShiftRow key={r.id} r={r} onRemove={removeShift} onReview={openReview} />)}
                   <RouteRows records={n.records} />
                 </View>
               ))}
@@ -298,6 +383,15 @@ export default function Earnings() {
           )}
         </>
       )}
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Driving data</Text>
+        <Text style={styles.hint}>
+          Each shift ended with the GPS recording on keeps its track, the houses, the plan and the ticks on this phone. Export shares all of
+          it as one file, so it can be analysed together once there are enough shifts.
+        </Text>
+        <Pressable onPress={exportData} hitSlop={8}><Text style={styles.linkText}>Export all driving data</Text></Pressable>
+      </View>
     </ScrollView>
   );
 }
@@ -341,7 +435,8 @@ const styles = StyleSheet.create({
   rateValue: { color: "#4ade80", fontSize: 22, fontWeight: "700", flex: 1 },
   input: { flex: 1, backgroundColor: "#0a0a0a", color: "#f5f5f5", borderWidth: 1, borderColor: "#333", borderRadius: 8, padding: 10, fontSize: 18 },
   linkText: { color: "#60a5fa", fontSize: 15 },
-  removeText: { color: "#f87171", fontSize: 12, marginTop: 4 },
+  removeText: { color: "#f87171", fontSize: 12 },
+  rowLinks: { flexDirection: "row", gap: 18, marginTop: 4 },
   errorBox: { backgroundColor: "#2a0f0f", borderRadius: 10, padding: 12, borderWidth: 1, borderColor: "#f87171" },
   errorText: { color: "#fca5a5", fontSize: 13 },
 });

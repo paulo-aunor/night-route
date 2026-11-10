@@ -5,6 +5,7 @@
 import type { ShiftState } from "@/types";
 import { deleteRecord } from "./history";
 import { loadShift, saveShift } from "./storage";
+import { deleteArchive } from "./archive";
 import { discardTrack } from "./tracking";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -55,6 +56,7 @@ export async function reopenShift(today: string, now: number): Promise<ShiftStat
   const state: ShiftState = { ...closed.state, date: today, finishedAt: null };
   await saveShift(state);
   await deleteRecord(closed.recordId);
+  await deleteArchive(closed.recordId);   // it is an open shift again; ending it keeps a new one
   await AsyncStorage.removeItem(KEY);   // the points stay: they belong to the shift that is open again
   return state;
 }

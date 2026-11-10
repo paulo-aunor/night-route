@@ -37,14 +37,29 @@ Built by one developer for one phone. No backend, no login, no sync: everything 
 - **Remove from reports** (Earnings, on each recorded shift): for a shift started by mistake. It stops counting in every total and cannot be brought back.
 - **Reopen the shift**: the latest ended shift is kept (its state and GPS points) for 12 hours. The home screen offers to put it back as tonight's shift and takes it out of the reports; ending it again records it once. Only the latest shift can be reopened.
 
-**Notifications** (`src/lib/alerts.ts`, screen `app/reminders.tsx`). Android only, all local: nothing is sent to a server.
+**Notifications** (`src/lib/alerts.ts`, screen `app/reminders.tsx`). Android only. The notifications are local; the near alert asks the routing server for a road distance (see **Distances**).
 - **Next house, with buttons.** While a shift is open, one ongoing notification shows the next house (address, name, notes, how many are left) with **Delivered** and **Navigate** buttons. Delivered ticks the house exactly as ticking it in the app does, saves it, and moves the notification to the next house. It works with Night Route closed: the library hands the press to a background task (Android only). Navigate opens the app and then Google Maps for that house.
-- **Near the next house.** Each GPS fix is checked against the next house. When the car comes within 100 m of it from further away, an alert pops (once per house) with the same buttons. A next house that is already close when it becomes next does not alert, so a street of doors gives one alert on arrival. It needs the GPS recording on.
+- **Near the next house.** Each GPS fix is checked against the next house. When the car comes within 150 m of it in a straight line from further away, the app asks the routing server for the road distance, and if that is 100 m or less an alert pops (once per house) with the same buttons. A house close on the line but far by road (a parallel street) does not alert, and is checked again every 20 s, up to three times. With no signal it falls back to the straight-line distance and says so. A next house that is already close when it becomes next does not alert, so a street of doors gives one alert on arrival. It needs the GPS recording on.
 - **Nightly reminder.** Weekly notifications on the nights you pick, at a time from 12:00 to 23:59 (the evening of that night), saying which paper is tonight. Set on the Notifications screen from the home screen.
 - The first shift asks for the notification permission. If it is refused, or the background handler fails, the shift screen says so under the header and tapping the line tries again.
 - A house ticked from a notification changes the saved shift behind the screen; the screen reloads it when the app comes back to the front, so its next save does not put the old copy back.
 
-**GPS recording.** When a shift starts, the app records your position in a background task with an Android foreground service, so it keeps working while Google Maps is on screen. This needs location set to "Allow all the time". The recorded distance is movement, so it includes walking to doors and the drive home. If permission is refused, the shift screen says so and you can retry from there.
+**GPS recording.** When a shift starts, the app records your position in a background task with an Android foreground service, so it keeps working while Google Maps is on screen. This needs location set to "Allow all the time". Each fix keeps its position, accuracy, compass heading and speed. If permission is refused, the shift screen says so and you can retry from there.
+
+**Distances.** There are two figures, and the app says which is which:
+- **Actually moved** is the distance the phone travelled, measured by GPS from the start of the shift to Shift done. It includes detours, and the drive home if the shift was ended at home. It is first the sum of straight segments between GPS fixes (known as soon as the shift ends, no signal needed). When there is signal, the shift's track is matched to roads a car can use, and the distance along those roads replaces it (`src/lib/roadSnap.ts`, run when the home screen or Earnings opens). The road figure is used only if the server could place at least 80% of the track on roads. Reports say "along roads" or "straight between GPS fixes" for each.
+- **Planned road distance** is the road distance of the planned order, driven exactly. It is shown as the comparison ("2.8 km (10%) more than planned"), not as a measurement.
+- Without GPS a shift shows an estimate along the houses ticked ("about x km, estimate, no GPS").
+
+What is sent where (the app has no server of its own):
+| Server | What it receives | When |
+|---|---|---|
+| Nominatim (OpenStreetMap) | an address and city | importing a route, adding a house |
+| Public OSRM routing server | the whole GPS track of a finished shift (positions only), in pieces of 10 points | when the home screen or Earnings opens with a shift not yet measured |
+| Public OSRM routing server | the car's position and the next house's | when the car comes within 150 m of the next house in a straight line |
+| Public OSRM routing server | a new house's position, the 12 nearest houses and the library | adding a house with no house within 80 m (otherwise it borrows a neighbour's road data) |
+
+**How it was driven** (`app/review.tsx`, "Review how it was driven" under a shift in Earnings). Each shift ended with the recording on keeps a file with its track, houses, the order planned at the start and when each house was ticked (`src/lib/archive.ts`), and the review is worked out from it (`src/lib/driving.ts`): distance moved against planned; houses delivered out of the planned order; houses the car drove within 25 m of before delivering them later; time per house and stops of 20 s or more; top speed, time over 50 km/h, and hard braking or acceleration (3 m/s per second or more). Earnings adds the same figures up for a night or a week, and has **Export all driving data**, which shares every kept shift as one JSON file.
 
 **Importing a route** (`app/import.tsx`). Pick a route PDF from the depot. The app parses it on the device (`src/lib/pdfRouteList.ts`), geocodes new addresses with Nominatim at one request a second (already-known addresses are reused), and orders the houses.
 - **Update** mode is for a full new PDF of a route you already have: existing houses keep their order, new houses are inserted at the cheapest place, dropped houses are removed, and you confirm the added and removed lists first. Stopped houses and notes carry over.
@@ -53,7 +68,8 @@ Built by one developer for one phone. No backend, no login, no sync: everything 
 
 **Earnings and reports** (`app/earnings.tsx`). Pay is a flat rate per house delivered (default $0.35, editable on the screen; the rate in force is saved on each shift so old shifts do not change when you change it). Two tabs, Tonight and This week, each with:
 - pay, houses delivered, stopped, time, houses per hour, earnings per hour;
-- distance covered along the delivered houses, planned distance, distance saved by optimizing, km per house;
+- distance actually moved (along roads where measured) with the planned distance as the comparison, an estimate along the houses when there was no GPS, distance saved by optimizing, road distance per house;
+- **How you drove**: houses driven past before delivered, out-of-order houses, stops, top speed, hard braking and acceleration, added up over the shifts with a recording;
 - the same figures per route, for every night and for the week; the week tab also steps back through earlier weeks and compares with the week before.
 
 Time and distance for each leg are credited to the route of the house the leg ends at. A shift where you did not tick houses as you went has no per-route timing, and shifts saved before per-route timing was added have none either.
@@ -67,6 +83,8 @@ Known limits:
 - A house at an intersection can be approached from more than two directions, so a few repeat passes remain.
 - The cut-through list comes from OpenStreetMap tags and only covers pairs that turned up in an audit. A new one on the road can still be missed.
 - Minutes saved are an estimate (24 km/h), not measured.
+- Road matching uses the public OSRM demo server. Checked against it on 2026-11-09: it accepts at most 10 points per match request (not the 100 its docs suggest), so a track goes up in pieces of 10 with fixes thinned to 60 m apart, about one request a second. A 40 km shift is on the order of 70 requests. On two test drives the road figure was within 0.1% to 1% of the straight-between-fixes figure (the road figure was the longer); it matters more with sparse fixes or many corners. If the server is down or there is no signal, the shift keeps the straight-between-fixes figure, Earnings says why, and the next open tries again.
+- Stops, speed and braking come from fixes about 5 s apart and a few metres to a few tens of metres off, so a short hard stop can be missed. The app has no street speed limits; "over 50 km/h" is the usual city limit, not the posted one. A house counts as driven past when the track came within 25 m, and houses across the street count, so some drive-bys are not mistakes.
 - The order model has no notion of which side of the car a house is on. On the private build's real routes roughly half the undelivered houses the car drives within 25 m of are on the passenger side. That is only a missed delivery if papers go out of the passenger window; they can go out of either side, or by a short walk, so it is not modelled. Pricing a short walk between nearby houses was tried and changed no order, because 20 seconds on foot costs about as much as 130 m of driving.
 - Re-route was checked against real street paths (`scripts/audit-reroute.mjs`). A repair step that moved single houses the model said were out of place (up to 274 m) gave identical real distance on one route and 0.17 km more on another, so it was not kept: the model is only good to a few percent, and gains of a few hundred metres are inside that. A cause for repeat passes after Re-route that has not been ruled out: the direction the car faces is inferred from the order houses were ticked, not from GPS heading.
 - Notification buttons: Android restricts starting an app from the background, so Navigate opens Night Route first and Maps from there. Delivered pressed with the app closed relies on the notification library's background task; it is tested with a stand-in for the library and has not been tried on a phone.
@@ -101,7 +119,7 @@ node scripts/test-logic.mjs
 node --test scripts/test-reorder-save.mjs
 ```
 
-`test-logic.mjs` compiles `src/` into a temp folder and runs it against in-memory stand-ins for storage, location and the background task. It needs no network and takes about 30 seconds because the order search is timed. It covers the night and paper-day rules, pay, history and per-route reports, the optimizer, update-mode import, Re-route, GPS tracking, notifications (what is shown, the Delivered button handled as the background task would, the near alert, reminders), search, houses added by hand (registry, address lookup, placement at shift start and mid-shift), removing a shift, and reopening one. The React screens and hooks are not covered by it.
+`test-logic.mjs` compiles `src/` into a temp folder and runs it against in-memory stand-ins for storage, location and the background task. It needs no network and takes about 30 seconds because the order search is timed. It covers the night and paper-day rules, pay, history and per-route reports, the optimizer, update-mode import, Re-route, GPS tracking, notifications (what is shown, the Delivered button handled as the background task would, the near alert, reminders), search, houses added by hand (registry, address lookup, placement at shift start and mid-shift), removing a shift, reopening one, the driving review (stops, speed, braking, drive-bys, order drift, the archive files), and road distances (the routing calls against a stand-in server, the road-snapping run, the near alert by road). The React screens and hooks are not covered by it.
 
 ## Layout
 
@@ -114,6 +132,7 @@ app/                    expo-router screens (file path = route)
   routes.tsx            hide / activate / delete / restore routes
   paused.tsx            houses marked Stopped
   reminders.tsx         notification settings: nightly reminder
+  review.tsx            how one shift was driven
   search.tsx            find any house; stop, resume or remove it
   add-house.tsx         add a new start
   import.tsx            PDF import (Update / Replace)
@@ -138,6 +157,11 @@ src/
     schedule.ts, settings.ts, paused.ts, notes.ts, storage.ts, mergeOrder.ts
     houseSearch.ts, addHouse.ts   search, and building a house added by hand
     reopen.ts           keeps the latest ended shift so it can be reopened
+    driving.ts          stops, speed, braking, drive-bys, order drift from a track (pure)
+    archive.ts          the file kept per shift: track, houses, plan, ticks; export
+    roads.ts            routing server calls: match a track, a car-to-house distance, a new house's roads
+    roadSnap.ts         measures kept shifts along roads when there is signal
+    drivingText.ts      wording for the driving figures
     alerts.ts           notifications: next-house notification, near alert, button handling, reminders
     nextHouse.ts, reminders.ts, shiftEvents.ts   their rules (no phone modules, so they are tested in Node)
     tracking.ts         background GPS recording and distance from the track

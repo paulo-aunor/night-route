@@ -4,6 +4,7 @@
 // delivers Saturday's. A shift belongs to the evening it started (one that starts before noon is the
 // tail of the night before). Everything here is pure except load/append and the hook.
 
+import type { DrivingSummary } from "./driving";
 import { useCallback, useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { ShiftState } from "@/types";
@@ -54,7 +55,21 @@ export type ShiftRecord = {
   optimizations: number;      // how many times the order was re-optimized
   startMode: "library" | "gps";
   byRoute: Record<string, RouteStats>;
+  driving?: DrivingSummary;   // stops, speed, braking, drive-bys; absent when the shift had no GPS recording
+  roadM?: number | null;      // the track matched to drivable roads (src/lib/roadSnap.ts); null or absent until that has run
+  roadCoverage?: number | null; // share of the track the road match could place, 0 to 1
 };
+
+// A road match that placed less than this share of the track leaves out too much (car parks, lanes the map lacks)
+// to stand in for the distance moved.
+export const MIN_ROAD_COVERAGE = 0.8;
+
+// The distance the shift moved: along roads when the track was matched well enough, else the sum of the straight
+// segments between GPS fixes. `onRoads` says which.
+export function movedOf(r: ShiftRecord): { m: number; onRoads: boolean } | null {
+  if (r.roadM != null && (r.roadCoverage ?? 0) >= MIN_ROAD_COVERAGE) return { m: r.roadM, onRoads: true };
+  return r.drivenM === null ? null : { m: r.drivenM, onRoads: false };
+}
 
 export const delivered = (r: ShiftRecord): number => r.ticked + r.counted;
 export const payCents = (r: ShiftRecord): number => delivered(r) * r.rateCents;
@@ -108,6 +123,7 @@ export type RecordContext = {
   routeStats?: Record<string, { minutes: number | null; coveredM: number | null; drivenM: number | null }>;
   finishedAt: number;
   routeOf: (houseId: string) => string | undefined;
+  driving?: DrivingSummary;
 };
 
 export function buildRecord(s: ShiftState, ctx: RecordContext): ShiftRecord {
@@ -147,6 +163,7 @@ export function buildRecord(s: ShiftState, ctx: RecordContext): ShiftRecord {
     optimizations: (s.optimizations ?? []).length,
     startMode: s.startMode ?? "library",
     byRoute,
+    ...(ctx.driving ? { driving: ctx.driving } : {}),
   };
 }
 
@@ -255,8 +272,10 @@ export type Totals = {
   plannedPartial: boolean;       // some shifts have none
   coveredM: number | null;
   coveredPartial: boolean;
-  drivenM: number | null;        // GPS distance, summed over the shifts that were recorded
+  drivenM: number | null;        // distance moved (along roads where matched, else GPS segments), over the recorded shifts
   drivenPartial: boolean;
+  recordedShifts: number;        // shifts with a GPS recording
+  roadShifts: number;            // of those, shifts whose distance is along roads
   kmPerHouse: number | null;     // distance covered per house delivered
   savedM: number;
   optimizations: number;
@@ -266,7 +285,7 @@ export function totalsOf(records: readonly ShiftRecord[]): Totals {
   const t: Totals = {
     shifts: records.length, due: 0, delivered: 0, ticked: 0, counted: 0, skipped: 0, stopped: 0,
     payCents: 0, duePayCents: 0, hours: 0, housesPerHour: null, centsPerHour: null, plannedM: null, plannedPartial: false,
-    coveredM: null, coveredPartial: false, drivenM: null, drivenPartial: false, kmPerHouse: null, savedM: 0, optimizations: 0,
+    coveredM: null, coveredPartial: false, drivenM: null, drivenPartial: false, recordedShifts: 0, roadShifts: 0, kmPerHouse: null, savedM: 0, optimizations: 0,
   };
   let planned = 0, plannedN = 0, covered = 0, coveredN = 0, coveredHouses = 0, driven = 0, drivenN = 0;
   for (const r of records) {
@@ -276,7 +295,8 @@ export function totalsOf(records: readonly ShiftRecord[]): Totals {
     t.hours += (r.finishedAt - r.startedAt) / 3_600_000;
     if (r.plannedM === null) t.plannedPartial = true; else { planned += r.plannedM; plannedN++; }
     if (r.coveredM === null) t.coveredPartial = true; else { covered += r.coveredM; coveredN++; coveredHouses += delivered(r); }
-    if (r.drivenM === null) t.drivenPartial = true; else { driven += r.drivenM; drivenN++; }
+    const moved = movedOf(r);
+    if (moved === null) t.drivenPartial = true; else { driven += moved.m; drivenN++; if (moved.onRoads) t.roadShifts++; }
     t.savedM += r.savedM; t.optimizations += r.optimizations;
   }
   if (t.hours > 0) {
@@ -285,9 +305,37 @@ export function totalsOf(records: readonly ShiftRecord[]): Totals {
   }
   if (plannedN > 0) t.plannedM = planned;
   if (drivenN > 0) t.drivenM = driven;
+  t.recordedShifts = drivenN;
   if (coveredN > 0) {
     t.coveredM = covered;
     if (coveredHouses > 0) t.kmPerHouse = covered / 1000 / coveredHouses;
+  }
+  return t;
+}
+
+// What the phone measured against what was planned, over the shifts that have both.
+export function distanceComparison(records: readonly ShiftRecord[]): { shifts: number; movedM: number; plannedM: number } | null {
+  const both = records.filter((r) => movedOf(r) !== null && r.plannedM !== null);
+  if (both.length === 0) return null;
+  return { shifts: both.length, movedM: both.reduce((t, r) => t + (movedOf(r) as { m: number }).m, 0), plannedM: both.reduce((t, r) => t + (r.plannedM as number), 0) };
+}
+
+export type DrivingTotals = {
+  shifts: number;            // shifts with a GPS recording
+  stops: number; stoppedS: number; aboveLimitS: number;
+  topKmh: number | null; hardBrakes: number; hardAccels: number;
+  passedHouses: number; passes: number; outOfOrder: number; outOfOrderShifts: number;
+};
+
+export function drivingTotals(records: readonly ShiftRecord[]): DrivingTotals {
+  const t: DrivingTotals = { shifts: 0, stops: 0, stoppedS: 0, aboveLimitS: 0, topKmh: null, hardBrakes: 0, hardAccels: 0, passedHouses: 0, passes: 0, outOfOrder: 0, outOfOrderShifts: 0 };
+  for (const r of records) {
+    const d = r.driving;
+    if (!d) continue;
+    t.shifts++; t.stops += d.stops; t.stoppedS += d.stoppedS; t.aboveLimitS += d.aboveLimitS;
+    t.hardBrakes += d.hardBrakes; t.hardAccels += d.hardAccels; t.passedHouses += d.passedHouses; t.passes += d.passes;
+    if (d.topKmh !== null && (t.topKmh === null || d.topKmh > t.topKmh)) t.topKmh = d.topKmh;
+    if (d.outOfOrder !== null) { t.outOfOrder += d.outOfOrder; t.outOfOrderShifts++; }
   }
   return t;
 }
@@ -328,6 +376,14 @@ export async function appendRecord(record: ShiftRecord): Promise<void> {
   const all = await loadHistory();
   const next = [...all.filter((r) => r.id !== record.id), record].sort((a, b) => a.startedAt - b.startedAt);
   await AsyncStorage.setItem(KEY, JSON.stringify(next));
+}
+
+// Stores the road-matched distance on a shift's record. False when the shift is no longer in the history.
+export async function setRoadDistance(id: string, meters: number, coverage: number): Promise<boolean> {
+  const all = await loadHistory();
+  if (!all.some((r) => r.id === id)) return false;
+  await AsyncStorage.setItem(KEY, JSON.stringify(all.map((r) => (r.id === id ? { ...r, roadM: meters, roadCoverage: coverage } : r))));
+  return true;
 }
 
 // Takes a shift out of the history, so it no longer counts in any report.

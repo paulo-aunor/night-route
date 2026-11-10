@@ -22,6 +22,9 @@ export type TrackPoint = {
   // Null when the fix didn't carry one, or a device that doesn't supply it. Used at Re-route to tell which way
   // the car was pointing at the last tick, without having to infer it from the tick order (src/lib/shift.ts).
   hd?: number | null;
+  // Speed in m/s from the fix (the radio's doppler shift, steadier than position differences). Null when the fix had
+  // none (Android reports -1 when it can't tell), absent on tracks recorded before speed was kept.
+  sp?: number | null;
 };
 
 const MAX_ACCURACY_M = 50;     // fixes less accurate than this are ignored
@@ -120,6 +123,7 @@ TaskManager.defineTask(TRACK_TASK, async ({ data, error }) => {
       t: l.timestamp, lat: l.coords.latitude, lng: l.coords.longitude, acc: l.coords.accuracy,
       // Android returns -1 when the phone isn't moving fast enough to tell; store that as null.
       hd: l.coords.heading == null || l.coords.heading < 0 ? null : l.coords.heading,
+      sp: l.coords.speed == null || l.coords.speed < 0 ? null : l.coords.speed,
     })));
     // Each fix is also a chance to tell the driver they are near the next house. A failure there is not a GPS failure.
     const last = locations[locations.length - 1];

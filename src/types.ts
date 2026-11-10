@@ -20,6 +20,12 @@ export interface Subscriber {
   schedule?: string;
   note?: string;        // delivery note carried from an imported PDF ("Attn: ...")
   roadTwin?: string;    // a house added by hand: the built-in house whose road distances stand in for it (see addHouse.ts)
+  // A house added by hand with no house within 80 m to borrow from: real road distances (metres, by car) to and from
+  // the houses around it and from the library, looked up when it was added (see roads.ts). Pairs not listed here
+  // are priced from the straight line.
+  roadOut?: Record<string, number>;
+  roadIn?: Record<string, number>;
+  roadLib?: number;
 }
 
 // One time the order was re-optimized during a shift, with the road distance of the houses still to deliver
@@ -45,6 +51,7 @@ export interface ShiftState {
   headingAt?: Record<string, number>;
   skippedIds: string[];
   orderedIds: string[];
+  startOrder?: string[];   // the order the shift started with, before any re-route or drag, to compare with how it was driven
   deliveryDayIdx?: number;
   // "gps" once the shift started from a live location or was re-routed from one.
   // Those orders are anchored to wherever Paulo was standing, so Shift done does

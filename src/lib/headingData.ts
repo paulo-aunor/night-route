@@ -65,6 +65,13 @@ function cutThroughPenalties(): Map<number, number> {
   return map;
 }
 
+// Road distances looked up for houses the road tables don't cover (houses added by hand), by "from>to" ids, with
+// "LIB>id" for the library. Set from the saved houses (registry.ts); a pair listed here is priced from it instead of
+// from the straight line.
+let extraRoads: ReadonlyMap<string, number> = new Map();
+export function setExtraRoadDistances(m: ReadonlyMap<string, number>): void { extraRoads = m; }
+export const roadKey = (from: string, to: string): string => `${from}>${to}`;
+
 // `at` says the car is at a known house (the one just delivered) facing one of its two directions, or `null` when
 // that is not known; the first leg then costs what it really costs from that house instead of a straight-line guess.
 export type StartSpec =
@@ -110,7 +117,7 @@ export function buildProblem(input: HeadingInput & { withPenalties?: boolean }):
         const extra = pen ? pen.get(Math.min(ka, kb) * N + Math.max(ka, kb)) ?? 0 : 0;
         for (let q = 0; q < 4; q++) c[q][a * n + b] = metres(d.tables[q * N * N + ka * N + kb]) + extra;
       } else {
-        const e = straightRoadMeters(coords[a], coords[b]);
+        const e = extraRoads.get(roadKey(ids[a], ids[b])) ?? straightRoadMeters(coords[a], coords[b]);
         for (let q = 0; q < 4; q++) c[q][a * n + b] = e;
       }
     }
@@ -121,7 +128,7 @@ export function buildProblem(input: HeadingInput & { withPenalties?: boolean }):
     const from: Coord = { lat: LIBRARY.lat, lng: LIBRARY.lng };
     for (let b = 0; b < n; b++) {
       for (let t = 0; t < 2; t++) {
-        start[t][b] = known[b] >= 0 ? metres(d.tables[4 * N * N + t * N + known[b]]) : straightRoadMeters(from, coords[b]);
+        start[t][b] = known[b] >= 0 ? metres(d.tables[4 * N * N + t * N + known[b]]) : extraRoads.get(roadKey("LIB", ids[b])) ?? straightRoadMeters(from, coords[b]);
       }
     }
   } else if (input.start.at && d.index.has(input.matrixIdOf?.(input.start.at.houseId) ?? input.start.at.houseId)) {

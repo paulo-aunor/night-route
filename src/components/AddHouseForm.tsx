@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { buildHouse, cleanHouseInput, findRoadTwin, SCHEDULES, type NewHouseInput, type ScheduleValue } from "@/lib/addHouse";
+import { buildHouse, cleanHouseInput, findRoadTwin, nearestHouses, SCHEDULES, type NewHouseInput, type ScheduleValue } from "@/lib/addHouse";
 import { findAddress, nominatimJson, type FoundAddress } from "@/lib/geocode";
+import { LIBRARY } from "@/data/routes";
 import { matrixIdOfHouse } from "@/lib/matrixAlias";
+import { roadsAround } from "@/lib/roads";
 import { allSubscribers, knownCoordinates, registry, visibleRoutes } from "@/lib/registry";
 import type { Subscriber } from "@/types";
 
@@ -55,7 +57,12 @@ export default function AddHouseForm({ defaultRouteId, onAdded }: {
     setError(null);
     setBusy("add");
     try {
-      const house = buildHouse(input(), match.coord, Date.now(), findRoadTwin(match.coord, allSubscribers(), matrixIdOfHouse));
+      const houses = allSubscribers();
+      const twin = findRoadTwin(match.coord, houses, matrixIdOfHouse);
+      // A house with a neighbour within 80 m borrows that neighbour's road data. One with none would be priced from
+      // the straight line, so its real road distances to the houses around it are looked up instead.
+      const roads = twin ? undefined : await roadsAround(match.coord, nearestHouses(match.coord, houses), { lat: LIBRARY.lat, lng: LIBRARY.lng });
+      const house = buildHouse(input(), match.coord, Date.now(), twin, roads);
       await registry.addHouse(house);
       await onAdded(house);
     } catch (e) {
@@ -107,7 +114,7 @@ export default function AddHouseForm({ defaultRouteId, onAdded }: {
         <View style={styles.matchBox}>
           <Text style={styles.matchTitle}>Found: check this is the right place</Text>
           <Text style={styles.matchText}>{match.label}</Text>
-          <Text style={styles.matchHint}>Google Maps is sent the address you typed, so a wrong match only affects where the stop sits in the order.</Text>
+          <Text style={styles.matchHint}>Google Maps is sent the address you typed, so a wrong match only affects where the stop sits in the order. If no house is within 80 m, Add also looks up road distances to the houses around it, which needs signal.</Text>
         </View>
       )}
       {error && <Text style={styles.error}>{error}</Text>}

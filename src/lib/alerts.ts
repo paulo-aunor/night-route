@@ -13,7 +13,8 @@ import * as TaskManager from "expo-task-manager";
 import { DEPOT_NOTES } from "@/data/depot-notes";
 import type { ShiftState, Subscriber } from "@/types";
 import { openInGoogleMaps } from "./navigation";
-import { markDeliveredState, nearStep, nextStop, stopsLeft, houseLine, type NearState } from "./nextHouse";
+import { markDeliveredState, nearResolve, nearStep, nextStop, stopsLeft, houseLine, type NearState } from "./nextHouse";
+import { roadDistanceM } from "./roads";
 import { loadNotes, noteKey } from "./notes";
 import { haversineM } from "./optimizer-v2";
 import { loadPaused } from "./paused";
@@ -114,14 +115,14 @@ export async function clearHouseNotifications(): Promise<void> {
   await AsyncStorage.removeItem(NEAR_KEY);
 }
 
-async function showNearAlert(h: Subscriber, s: ShiftState, distM: number): Promise<void> {
+async function showNearAlert(h: Subscriber, s: ShiftState, distM: number, byRoad: boolean): Promise<void> {
   if (s.startedAt === null) throw new Error("This shift never started.");
   await ensureSetup();
   await Notifications.scheduleNotificationAsync({
     identifier: NEAR_ID,
     content: {
       title: `Near: ${h.address}`,
-      body: `${Math.round(distM)} m away · ${await lineFor(h)}`,
+      body: `${Math.round(distM)} m ${byRoad ? "by road" : "away"} · ${await lineFor(h)}`,
       categoryIdentifier: CATEGORY,
       data: { houseId: h.id, shift: s.startedAt },
       sticky: false,
@@ -131,7 +132,9 @@ async function showNearAlert(h: Subscriber, s: ShiftState, distM: number): Promi
   });
 }
 
-// Called with each GPS fix while a shift is recording. Alerts once when the car comes within NEAR_M of the next house.
+// Called with each GPS fix while a shift is recording. Alerts once when the car comes within NEAR_M, by road, of the next
+// house. The straight line only decides when to ask the routing server (sending the car's position and the house's);
+// with no signal the straight-line distance is used instead, and the failure is stored for the shift screen to show.
 export async function checkNearHouse(fix: { lat: number; lng: number }): Promise<void> {
   const s = await loadActiveShift();
   if (s === null || s.startedAt === null) return;
@@ -140,9 +143,20 @@ export async function checkNearHouse(fix: { lat: number; lng: number }): Promise
   const next = nextStop(s, await loadPaused(), houses);
   if (next === null) return;
   const raw = await AsyncStorage.getItem(NEAR_KEY);
-  const step = nearStep(raw ? (JSON.parse(raw) as NearState) : null, s.startedAt, next.id, haversineM(fix, next));
+  const straight = haversineM(fix, next);
+  const step = nearStep(raw ? (JSON.parse(raw) as NearState) : null, s.startedAt, next.id, straight, Date.now());
   await AsyncStorage.setItem(NEAR_KEY, JSON.stringify(step.state));
-  if (step.alert) await showNearAlert(next, s, haversineM(fix, next));
+  if (!step.lookup) return;
+  let road: number | null, byRoad = true;
+  try {
+    road = await roadDistanceM(fix, next);
+  } catch (e) {
+    await recordAlertError(new Error(`Couldn't check the road distance to the next house (${errText(e)}). Using the straight-line distance.`));
+    road = straight; byRoad = false;
+  }
+  const res = nearResolve(step.state, road);
+  await AsyncStorage.setItem(NEAR_KEY, JSON.stringify(res.state));
+  if (res.alert) await showNearAlert(next, s, road as number, byRoad);
 }
 
 // Ticks a house from a notification button: the same change as ticking it in the app, saved, then the notification

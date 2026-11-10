@@ -12,6 +12,7 @@ import { ROUTES } from "@/data/routes";
 import { SUBSCRIBERS } from "@/data/subscribers";
 import type { Route, Subscriber } from "@/types";
 import { addressKey, type Coord } from "./geocode";
+import { roadKey, setExtraRoadDistances } from "./headingData";
 import { addressNoteKey } from "./importRoute";
 import * as core from "./registry-core";
 import { deliversOn } from "./schedule";
@@ -23,8 +24,20 @@ type Snapshot = { ready: boolean; error: string | null; state: core.RegistryStat
 
 let snap: Snapshot = { ready: false, error: null, state: core.EMPTY_STATE };
 const listeners = new Set<() => void>();
+// Road distances looked up for houses added by hand go to the ordering code, which would otherwise guess them.
+function syncRoadData(): void {
+  const m = new Map<string, number>();
+  for (const h of core.effectiveSubs(snap.state, BUILT_INS)) {
+    for (const [other, d] of Object.entries(h.roadOut ?? {})) m.set(roadKey(h.id, other), d);
+    for (const [other, d] of Object.entries(h.roadIn ?? {})) m.set(roadKey(other, h.id), d);
+    if (h.roadLib !== undefined) m.set(roadKey("LIB", h.id), h.roadLib);
+  }
+  setExtraRoadDistances(m);
+}
+
 const emit = (next: Partial<Snapshot>) => {
   snap = { ...snap, ...next };
+  if ("state" in next) syncRoadData();
   listeners.forEach((l) => l());
 };
 
