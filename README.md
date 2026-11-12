@@ -19,7 +19,7 @@ Built by one developer for one phone. No backend, no login, no sync: everything 
 - Measured savings are not quoted here: the figures from the private build were taken on real routes, not on this synthetic data.
 
 **Shift screen** (`app/shift.tsx`).
-- Next-stop card and an ordered checklist. Tap an address to open Google Maps in driving mode. Tick a house to mark it delivered.
+- Next-stop card and an ordered checklist. Tap the card to open Google Maps in driving mode, or its **Delivered** button to tick that house off without hunting for it in the list; an Undo under it takes back a mis-tap. Tick a house in the list to mark it delivered.
 - Drag the handle (or long-press a row) to reorder by hand. The order is remembered for the next shift on the same routes.
 - Notes per house (the pencil button), merged with the depot's own delivery instructions from the PDFs.
 - Stop a house (paper not delivered). Stopped houses are skipped on every shift until you un-stop them; they are listed on the Stopped screen (`app/paused.tsx`). You can also stop or resume any house from **Search houses** on the home screen, without starting a shift.

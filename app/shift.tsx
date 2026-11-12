@@ -136,6 +136,8 @@ export default function Shift() {
   }
 
   const delivered = state.deliveredIds;
+  // the house ticked most recently, so a mis-tap on Delivered can be taken back without hunting down the list
+  const lastDelivered = delivered.length > 0 ? stops.find((s) => s.id === delivered[delivered.length - 1]) : undefined;
   const remaining = stops.filter((s) => !delivered.includes(s.id));
   const nextStop = remaining[0];
   const allDone = remaining.length === 0;
@@ -321,14 +323,26 @@ export default function Shift() {
       </View>
 
       {nextStop && !allDone && (
-        <Pressable style={styles.next} onPress={() => openInGoogleMaps(nextStop)}>
-          <Text style={styles.nextLabel}>NEXT</Text>
-          <Text style={styles.nextAddress}>{nextStop.address}</Text>
-          <Text style={styles.nextName}>{nextStop.name}</Text>
-          {(DEPOT_NOTES[nextStop.id] ?? nextStop.note) ? <Text style={styles.nextDepotNote}>📮 {DEPOT_NOTES[nextStop.id] ?? nextStop.note}</Text> : null}
-          {notes[noteKey(nextStop)] ? <Text style={styles.nextNote}>✎ {notes[noteKey(nextStop)]}</Text> : null}
-          <Text style={styles.nextNav}>Tap to navigate ›</Text>
-        </Pressable>
+        <View style={styles.next}>
+          <Pressable onPress={() => openInGoogleMaps(nextStop)}>
+            <Text style={styles.nextLabel}>NEXT</Text>
+            <Text style={styles.nextAddress}>{nextStop.address}</Text>
+            <Text style={styles.nextName}>{nextStop.name}</Text>
+            {state.blockedStops?.includes(nextStop.id) ? <Text style={styles.nextBlocked}>⚠ the way here goes down a road you marked blocked</Text> : null}
+            {(DEPOT_NOTES[nextStop.id] ?? nextStop.note) ? <Text style={styles.nextDepotNote}>📮 {DEPOT_NOTES[nextStop.id] ?? nextStop.note}</Text> : null}
+            {notes[noteKey(nextStop)] ? <Text style={styles.nextNote}>✎ {notes[noteKey(nextStop)]}</Text> : null}
+            <Text style={styles.nextNav}>Tap to navigate ›</Text>
+          </Pressable>
+          {/* big enough to hit without looking: the usual way to tick off the house you are at */}
+          <Pressable style={styles.nextDone} onPress={() => markDelivered(nextStop.id)}>
+            <Text style={styles.nextDoneText}>✓ Delivered</Text>
+          </Pressable>
+          {lastDelivered && (
+            <Pressable style={styles.nextUndo} onPress={() => unmarkDelivered(lastDelivered.id)} hitSlop={8}>
+              <Text style={styles.nextUndoText}>Undo {lastDelivered.address}</Text>
+            </Pressable>
+          )}
+        </View>
       )}
 
       {allDone && (
@@ -457,6 +471,11 @@ const styles = StyleSheet.create({
   nextDepotNote: { color: "#60a5fa", fontSize: 14, marginTop: 6 },
   nextNote: { color: "#facc15", fontSize: 14, marginTop: 6, fontStyle: "italic" },
   nextNav: { color: "#4ade80", fontSize: 14, marginTop: 12, fontWeight: "600" },
+  nextBlocked: { color: "#fca5a5", fontSize: 14, marginTop: 6 },
+  nextDone: { marginTop: 14, paddingVertical: 18, borderRadius: 12, backgroundColor: "#4ade80", alignItems: "center" },
+  nextDoneText: { color: "#0a0a0a", fontSize: 20, fontWeight: "800", letterSpacing: 0.5 },
+  nextUndo: { paddingTop: 10, alignItems: "center" },
+  nextUndoText: { color: "#888", fontSize: 13 },
 
   doneBanner: { borderColor: "#facc15", backgroundColor: "#1a1305", alignItems: "center", gap: 12 },
   doneTitle: { color: "#facc15", fontSize: 24, fontWeight: "700" },
