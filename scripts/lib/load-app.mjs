@@ -17,7 +17,7 @@ export function loadApp(extraEntries = []) {
   // ---- compile ----
 
   const entries = ["lib/shift", "lib/importRoute", "lib/history", "lib/settings", "lib/schedule", "lib/headingData", "lib/headingSearch",
-    "lib/mergeOrder", "lib/tracking", "lib/houseSearch", "lib/addHouse", "lib/geocode", "lib/reopen", "lib/registry", "lib/registry-core", "data/routes", "lib/alerts", "lib/nextHouse", "lib/reminders", "lib/shiftEvents", "lib/notes", "lib/navigation", "lib/driving", "lib/archive", "lib/roads", "lib/roadSnap", "data/cut-through", "lib/matrixAlias", "data/seed-orders", "data/subscribers", "data/anchors"].map((f) => path.join(ROOT, "src", f + ".ts"));
+    "lib/mergeOrder", "lib/tracking", "lib/houseSearch", "lib/addHouse", "lib/geocode", "lib/reopen", "lib/registry", "lib/registry-core", "data/routes", "lib/alerts", "lib/nextHouse", "lib/reminders", "lib/shiftEvents", "lib/notes", "lib/navigation", "lib/driving", "lib/archive", "lib/roads", "lib/roadSnap", "lib/streets", "lib/blocked", "lib/blockedPlan", "data/cut-through", "lib/matrixAlias", "data/seed-orders", "data/subscribers", "data/anchors"].map((f) => path.join(ROOT, "src", f + ".ts"));
   fs.writeFileSync(path.join(OUT, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
       target: "es2020", module: "commonjs", moduleResolution: "node", resolveJsonModule: true, esModuleInterop: true,

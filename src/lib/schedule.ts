@@ -33,6 +33,18 @@ function scheduleDays(schedule: string | undefined): Set<number> | null {
   return days.size > 0 ? days : null;
 }
 
+// Saturday's paper goes to every house on the route lists, whatever its schedule, so it names the full set.
+export const FULL_PAPER_DAY = 6;
+
+// Which houses get a paper differs by night: the Fri/Sat-only ones are missing from Monday to Thursday. An order
+// planned around them does not fit a night they are left out of, so each pattern keeps its own saved order. This
+// names the pattern: the delivery schedules that are live on `dayIdx`.
+export function patternTag(schedules: Iterable<string | undefined>, dayIdx: number): string {
+  const live = new Set<string>();
+  for (const s of schedules) if (deliversOn(s, dayIdx)) live.add(s ?? "every day");
+  return [...live].sort().join("+");
+}
+
 export function deliversOn(schedule: string | undefined, dayIdx: number): boolean {
   const days = scheduleDays(schedule);
   if (!days) return true;

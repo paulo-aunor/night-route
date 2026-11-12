@@ -28,8 +28,14 @@ Built by one developer for one phone. No backend, no login, no sync: everything 
 - **Shift done** saves the shift to history. Houses ticked after the fact are counted at the end. If it was tapped by mistake, the home screen offers **Reopen the shift** for the next 12 hours (see below).
 - Screen stays awake while the shift is open.
 
+**An order per night.** The baked orders cover every house on a route, but the Fri/Sat-only houses get no paper from Monday to Thursday. Dropping them from the order leaves the shape that was planned around them, so at shift start the order is solved again for the houses actually being delivered, and the result kept only if it is clearly shorter (at least 150 m and 3%). The figures behind this were measured on the private build's real routes, not on this synthetic data, so they are not quoted here. Orders are also saved per night pattern now (`@rr/lastOrder/v15/`), so a Friday order is never reloaded for a Tuesday.
+
+**Blocked roads** (`app/blocked.tsx`, `src/lib/blocked.ts`). A road closed for construction, gated, or one you are not allowed down: the map thinks it is open, so the app has to be told. Pick the road from the streets on your routes, or type any road name, and give it an end date or leave it until you remove it. At the next shift start the app asks the router which roads each leg drives down, makes the pairs that use a blocked one expensive, and orders again; any stop it still has to reach down that road is flagged on the list. The pairs it learns are kept, so a re-route with no signal still steers around them, and a list already planned for costs one look rather than a search.
+
+One-way streets, turn bans and dead ends are already in the map the distances come from, so they do not belong on the list.
+
 **Search, new starts, and undo.**
-- **Search houses** (`app/search.tsx`): type part of an address, name or postal code; any house on any route can be stopped or resumed from the result, with no shift started.
+- **Search houses** (`app/search.tsx`): type part of an address, name or postal code; any house on any route can be stopped or resumed from the result, with no shift started, and its note added or edited there instead of only during a shift.
 - **Add a house** (`app/add-house.tsx`, also a button on the shift screen): route, address, city, optional postal code and name, and whether it gets paper every day or Fri and Sat only. The address is looked up on Nominatim and the matched place is shown for you to check before the house is saved. Google Maps is sent the address you typed. The house is stored with the registry (`added` in `@rr/registry/v1`), not in the route list files.
   - At the start of a shift, a house that neither the saved order nor the baked seed knows is slotted in where it adds the least driving (C13's first nine stay first). During a shift it is slotted into the stops left, from the last house delivered.
   - To place it, the house borrows the road data of the nearest house within 80 m (`roadTwin`) and is ordered as that house's neighbour. Further than 80 m from any house it has only a straight-line estimate and can land away from its real neighbours; drag it into place.
@@ -87,6 +93,9 @@ Known limits:
 - Stops, speed and braking come from fixes about 5 s apart and a few metres to a few tens of metres off, so a short hard stop can be missed. The app has no street speed limits; "over 50 km/h" is the usual city limit, not the posted one. A house counts as driven past when the track came within 25 m, and houses across the street count, so some drive-bys are not mistakes.
 - The order model has no notion of which side of the car a house is on. On the private build's real routes roughly half the undelivered houses the car drives within 25 m of are on the passenger side. That is only a missed delivery if papers go out of the passenger window; they can go out of either side, or by a short walk, so it is not modelled. Pricing a short walk between nearby houses was tried and changed no order, because 20 seconds on foot costs about as much as 130 m of driving.
 - Re-route was checked against real street paths (`scripts/audit-reroute.mjs`). A repair step that moved single houses the model said were out of place (up to 274 m) gave identical real distance on one route and 0.17 km more on another, so it was not kept: the model is only good to a few percent, and gains of a few hundred metres are inside that. A cause for repeat passes after Re-route that has not been ruled out: the direction the car faces is inferred from the order houses were ticked, not from GPS heading.
+- Blocked roads were tested against the real router on the five routes, and on those routes re-planning never actually removed one: a road worth blocking is either one with houses on it (which has to be driven to deliver there) or the only link between two parts of the route, so every order uses it. In both cases the app now leaves the order alone and flags the stops rather than paying distance for nothing: blocking a long road with houses on it used to cost distance for no fewer blocked legs, and now costs none. Re-planning will help where a genuine alternative exists; whether that happens on a real closure is untested.
+- A street is matched between the route lists (which write it short and upper case) and the router (which writes it out in full) by reducing both to one form. Every street on the routes matched when the private build was checked (`scripts/audit-street-names.mjs`), but a road typed by hand that the router names differently would match nothing, and the screen cannot tell you that until a shift has been planned.
+- Hard street clustering was tried and dropped: forcing each street to be delivered in one pass cut street visits but was worse on every other measure, longer with more turns, because a newspaper route is not a sequence of whole streets.
 - Notification buttons: Android restricts starting an app from the background, so Navigate opens Night Route first and Maps from there. Delivered pressed with the app closed relies on the notification library's background task; it is tested with a stand-in for the library and has not been tried on a phone.
 - Directions still need signal for Google Maps' live routing. The checklist, orders and reports work offline.
 - There is no skip button on the shift screen, so the "skipped" figure on the reports is always 0. Use Stop for a house that gets no paper.
@@ -117,9 +126,10 @@ Queue time on the free tier has ranged from minutes to several hours. The build 
 npm run typecheck
 node scripts/test-logic.mjs
 node --test scripts/test-reorder-save.mjs
+node scripts/audit-street-names.mjs    # needs the network
 ```
 
-`test-logic.mjs` compiles `src/` into a temp folder and runs it against in-memory stand-ins for storage, location and the background task. It needs no network and takes about 30 seconds because the order search is timed. It covers the night and paper-day rules, pay, history and per-route reports, the optimizer, update-mode import, Re-route, GPS tracking, notifications (what is shown, the Delivered button handled as the background task would, the near alert, reminders), search, houses added by hand (registry, address lookup, placement at shift start and mid-shift), removing a shift, reopening one, the driving review (stops, speed, braking, drive-bys, order drift, the archive files), and road distances (the routing calls against a stand-in server, the road-snapping run, the near alert by road). The React screens and hooks are not covered by it.
+`test-logic.mjs` compiles `src/` into a temp folder and runs it against in-memory stand-ins for storage, location and the background task. It needs no network and takes about 30 seconds because the order search is timed. It covers the night and paper-day rules, pay, history and per-route reports, the optimizer, update-mode import, Re-route, GPS tracking, notifications (what is shown, the Delivered button handled as the background task would, the near alert, reminders), search, houses added by hand (registry, address lookup, placement at shift start and mid-shift), removing a shift, reopening one, the driving review (stops, speed, braking, drive-bys, order drift, the archive files), road distances (the routing calls against a stand-in server, the road-snapping run, the near alert by road), the per-night order, and blocked roads (street names, the list, and the planning against a stand-in router). The React screens and hooks are not covered by it.
 
 ## Layout
 
@@ -132,6 +142,7 @@ app/                    expo-router screens (file path = route)
   routes.tsx            hide / activate / delete / restore routes
   paused.tsx            houses marked Stopped
   reminders.tsx         notification settings: nightly reminder
+  blocked.tsx           roads you can't use
   review.tsx            how one shift was driven
   search.tsx            find any house; stop, resume or remove it
   add-house.tsx         add a new start
@@ -163,6 +174,9 @@ src/
     roadSnap.ts         measures kept shifts along roads when there is signal
     drivingText.ts      wording for the driving figures
     alerts.ts           notifications: next-house notification, near alert, button handling, reminders
+    streets.ts          one form for a street name, so the lists and the router agree
+    blocked.ts          the list of roads you can't use, and the pairs learnt for it
+    blockedPlan.ts      steering an order away from them (pure)
     nextHouse.ts, reminders.ts, shiftEvents.ts   their rules (no phone modules, so they are tested in Node)
     tracking.ts         background GPS recording and distance from the track
     navigation.ts       opens Google Maps (driving mode)
@@ -181,6 +195,7 @@ These talk to public servers (OSRM, Overpass, Nominatim) and cache under `script
 | The built-in house list or coordinates change | `node scripts/bake-heading-seeds.mjs fetch`, then `solve all-sets`, then `write`, then `node scripts/export-heading-data.mjs` |
 | You want to re-check orders for cut-throughs | `node scripts/audit-cut-throughs.mjs`, then re-bake |
 | You want to measure what Re-route does on real roads | `node scripts/audit-reroute.mjs` |
+| The house list changes, to check blocking a road still matches | `node scripts/audit-street-names.mjs` |
 
 Bump `LAST_ORDER_PREFIX` in `src/lib/storage.ts` after re-baking, or phones keep using the orders they saved. The `bake` modes and options are described at the top of `scripts/bake-heading-seeds.mjs`.
 

@@ -218,6 +218,10 @@ export default function Home() {
         <Text style={styles.addRouteText}>Add a house (new start)</Text>
       </Pressable>
 
+      <Pressable style={styles.addRouteBtn} onPress={() => router.push("/blocked" as never)}>
+        <Text style={styles.addRouteText}>Blocked roads</Text>
+      </Pressable>
+
       <Pressable style={styles.addRouteBtn} onPress={() => router.push("/reminders" as never)}>
         <Text style={styles.addRouteText}>Notifications and nightly reminder</Text>
       </Pressable>

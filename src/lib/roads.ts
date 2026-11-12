@@ -9,6 +9,7 @@
 import type { TrackPoint } from "./tracking";
 import { goodFixes, GAP_MS } from "./driving";
 import { haversineM } from "./optimizer-v2";
+import { normalizeStreet } from "./streets";
 
 export const OSRM = "https://router.project-osrm.org";
 const REQUEST_GAP_MS = 1100;
@@ -113,6 +114,25 @@ export async function roadDistanceM(from: P, to: P, deps: RoadDeps = realDeps): 
   if (body.code === "NoRoute") return null;
   if (body.code !== "Ok" || !body.routes?.[0]) throw new Error(`The routing server couldn't find a route (${body.code ?? "no answer"}).`);
   return body.routes[0].distance;
+}
+
+// ---- which roads a leg drives down ----
+
+// The road names used by each leg of `points`, in one form (src/lib/streets.ts). One entry per leg, so the leg
+// from points[i] to points[i+1] is at i. Used to find the legs that go down a road you marked blocked.
+export async function streetsOnLegs(points: readonly P[], deps: RoadDeps = realDeps): Promise<string[][]> {
+  const out: string[][] = [];
+  for (let i = 0; i < points.length - 1; i += 40) {
+    const part = points.slice(i, Math.min(i + 41, points.length));
+    if (i > 0) await deps.sleep(REQUEST_GAP_MS);
+    const body = (await deps.fetchJson(`${OSRM}/route/v1/driving/${part.map(lonLat).join(";")}?overview=false&steps=true`)) as
+      { code?: string; routes?: { legs: { steps: { name?: string }[] }[] }[] };
+    if (body.code !== "Ok" || !body.routes?.[0]) throw new Error(`The routing server couldn't follow the route (${body.code ?? "no answer"}).`);
+    for (const leg of body.routes[0].legs) {
+      out.push([...new Set(leg.steps.map((s) => normalizeStreet(s.name ?? "")).filter(Boolean))]);
+    }
+  }
+  return out;
 }
 
 // ---- a house added by hand ----

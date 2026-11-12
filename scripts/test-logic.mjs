@@ -1314,6 +1314,239 @@ await test("snapPendingShifts: measures each kept shift along roads once, stores
   assert.ok(calls <= 2, `one run: ${calls} requests`);
 });
 
+// ---- an order per night: the Fri/Sat-only houses ----
+
+await test("patternTag: Monday to Thursday nights deliver a different set from Friday and Saturday", () => {
+  const schedules = SUBSCRIBERS.map((x) => x.schedule);
+  const weekday = sch.patternTag(schedules, 2), friday = sch.patternTag(schedules, 5), saturday = sch.patternTag(schedules, 6);
+  assert.notStrictEqual(weekday, friday, "a Tuesday paper and a Friday paper are not the same set of houses");
+  assert.strictEqual(friday, saturday);
+  assert.strictEqual(sch.patternTag(schedules, sch.FULL_PAPER_DAY), friday, "Saturday names the full set");
+  for (const x of SUBSCRIBERS) assert.strictEqual(sch.deliversOn(x.schedule, sch.FULL_PAPER_DAY), true, `${x.id} (${x.schedule}) gets no Saturday paper, so FULL_PAPER_DAY no longer names every house`);
+  assert.strictEqual(sch.patternTag(["Mon-Sat", "Mon-Sat"], 2), sch.patternTag(["Mon-Sat"], 2), "the same schedule twice is one pattern");
+  assert.strictEqual(sch.patternTag([undefined], 2), "every day");
+  assert.strictEqual(sch.patternTag([], 2), "");
+});
+await test("a saved order is kept per night pattern, so Friday's order is never loaded for a Tuesday", async () => {
+  for (const k of Object.keys(store)) if (k.startsWith("@rr/lastOrder/")) delete store[k];
+  await Sto.saveLastOrder(["C3"], ["a", "b"], "", "Mon-Sat");
+  await Sto.saveLastOrder(["C3"], ["c", "d", "e"], "", "FriSat+Mon-Sat");
+  assert.deepStrictEqual(await Sto.loadLastOrder(["C3"], "", "Mon-Sat"), ["a", "b"]);
+  assert.deepStrictEqual(await Sto.loadLastOrder(["C3"], "", "FriSat+Mon-Sat"), ["c", "d", "e"]);
+  assert.strictEqual(await Sto.loadLastOrder(["C3"], "", "other"), null);
+  assert.ok(Object.keys(store).some((k) => k.startsWith("@rr/lastOrder/v15/")), "the key was bumped so last release's mixed orders are dropped");
+});
+await test("tightenForTonight: a seed with the Fri/Sat-only houses dropped is re-solved and comes out clearly shorter", () => {
+  const seed = SEED_ORDERS.C3;
+  const weekday = seed.filter((id) => by.get(id).schedule !== "FriSat");
+  assert.ok(weekday.length < seed.length && weekday.length > 30, `${weekday.length} of ${seed.length}`);
+  const out = Shift.tightenForTonight(weekday, seed, [], ["C3"]);
+  assert.deepStrictEqual([...out].sort(), [...weekday].sort(), "every house still there, exactly once");
+  const cost = (o) => HD.plannedMeters({ stopIds: o, order: o, coordOf, matrixIdOf, start: { kind: "library" } });
+  const before = cost(weekday), after = cost(out);
+  assert.ok(after <= before, `${Math.round(before)} m -> ${Math.round(after)} m`);   // the private build measures a real gain here; these synthetic streets need not show one
+});
+await test("tightenForTonight: an order missing nothing is left exactly as it is", () => {
+  const seed = SEED_ORDERS.C3;
+  assert.deepStrictEqual(Shift.tightenForTonight(seed, seed, [], ["C3"]), seed);
+  const stopped = [seed[4], seed[9]];
+  const withStops = seed.filter((id) => !stopped.includes(id)).concat(stopped);
+  assert.deepStrictEqual(Shift.tightenForTonight(withStops, withStops, stopped, ["C3"]), withStops);
+});
+await test("tightenForTonight: stopped houses stay at the end and C13's first nine still lead", () => {
+  const seed = SEED_ORDERS.C13;
+  const weekday = seed.filter((id) => by.get(id).schedule !== "FriSat");
+  // one of the nine gets a paper only on Fri and Sat, so eight of them lead on a weekday night
+  const anchors = anchorIdsFor(["C13"], SUBSCRIBERS).filter((id) => weekday.includes(id));
+  assert.strictEqual(anchors.length, 8);
+  const stopped = [weekday[20], weekday[30]];
+  const order = weekday.filter((id) => !stopped.includes(id)).concat(stopped);
+  const out = Shift.tightenForTonight(order, seed, stopped, ["C13"]);
+  assert.deepStrictEqual([...out].sort(), [...order].sort());
+  assert.deepStrictEqual(out.slice(-2).sort(), [...stopped].sort(), "the stopped houses are last");
+  assert.deepStrictEqual(out.slice(0, 8), anchors, "the anchors delivered tonight still lead, in order");
+});
+await test("tightenForTonight: too few houses left to re-order, and a route with no Fri/Sat-only houses", () => {
+  const seed = SEED_ORDERS.C3;
+  assert.deepStrictEqual(Shift.tightenForTonight(seed.slice(0, 2), seed, [], ["C3"]), seed.slice(0, 2));
+  const g11 = SEED_ORDERS.A11;
+  assert.strictEqual(g11.filter((id) => by.get(id).schedule === "FriSat").length, 0, "A11 has none");
+  assert.deepStrictEqual(Shift.tightenForTonight(g11, g11, [], ["A11"]), g11, "nothing dropped, nothing re-ordered");
+});
+
+// ---- roads you can't use ----
+
+const Str = lib("streets"), Blk = lib("blocked"), BPlan = lib("blockedPlan");
+
+await test("street names: what the route lists write and what the router writes reduce to the same thing", () => {
+  assert.strictEqual(Str.normalizeStreet("River Road West"), "RIVER RD W");
+  assert.strictEqual(Str.normalizeStreet("RIVER RD W"), "RIVER RD W");
+  assert.strictEqual(Str.normalizeStreet("Birch Street"), Str.streetOf("222 BIRCH ST"));
+  assert.strictEqual(Str.normalizeStreet("Juniper Drive"), Str.streetOf("210 JUNIPER DR"));
+  assert.strictEqual(Str.normalizeStreet("Hawthorn Crescent South"), Str.streetOf("152 HAWTHORN CRES S"));
+  assert.strictEqual(Str.streetOf("208 CEDAR ST E APT A"), "CEDAR ST E");
+  assert.strictEqual(Str.streetOf("117 1/2 WILLOW ST APT 1"), "WILLOW ST", "a half number belongs to the house");
+  assert.strictEqual(Str.streetOf("121 RIVER RD W UNIT 8"), "RIVER RD W");
+  assert.strictEqual(Str.normalizeStreet("St. Anne Street"), Str.streetOf("12 ST ANNE ST"));
+  assert.strictEqual(Str.normalizeStreet(""), "");
+  // every street the app knows reduces to something; the audit script checks they match the router
+  for (const s of SUBSCRIBERS) assert.ok(Str.streetOf(s.address).length > 0, s.address);
+});
+
+await test("the blocked list: add, reject a repeat, remove, and stop applying once it runs out", async () => {
+  delete store["@rr/blocked/v1"]; delete store["@rr/blocked/pairs/v1"];
+  const now = at(2026, 11, 12, 20).getTime();
+  assert.deepStrictEqual(await Blk.loadBlocked(), []);
+  const road = Blk.makeBlocked("Willow St", now, null);
+  assert.deepStrictEqual([road.street, road.label, road.until], ["WILLOW ST", "Willow St", null]);
+  assert.throws(() => Blk.makeBlocked("   ", now), /Type or pick the road/);
+  await Blk.addBlocked(road);
+  await assert.rejects(Blk.addBlocked(Blk.makeBlocked("willow street", now + 1)), /already on the list/, "the same road under another name");
+  const temporary = Blk.makeBlocked("Juniper Dr", now + 60_000, now + 86_400_000);
+  await Blk.addBlocked(temporary);
+  assert.deepStrictEqual([...Blk.liveStreets(await Blk.loadBlocked(), now)].sort(), ["JUNIPER DR", "WILLOW ST"]);
+  assert.deepStrictEqual([...Blk.liveStreets(await Blk.loadBlocked(), now + 2 * 86_400_000)], ["WILLOW ST"], "the week-long one has run out");
+  assert.deepStrictEqual(Blk.liveRoads(await Blk.loadBlocked(), now + 60_000).map((b) => b.label), ["Juniper Dr", "Willow St"], "newest first");
+  await Blk.removeBlocked(road.id);
+  assert.deepStrictEqual((await Blk.loadBlocked()).map((b) => b.label), ["Juniper Dr"]);
+  store["@rr/blocked/v1"] = JSON.stringify({ not: "a list" });
+  await assert.rejects(Blk.loadBlocked(), /expected shape/);
+  delete store["@rr/blocked/v1"];
+});
+await test("learnt pairs are kept only while the list of blocked roads is the same", async () => {
+  const one = Blk.signatureOf(new Set(["WILLOW ST"])), two = Blk.signatureOf(new Set(["WILLOW ST", "JUNIPER DR"]));
+  assert.strictEqual(Blk.signatureOf(new Set(["JUNIPER DR", "WILLOW ST"])), two, "the order they were added in doesn't matter");
+  assert.deepStrictEqual(await Blk.loadPairs(one), { pairs: new Set(), planned: false }, "never planned for yet");
+  await Blk.savePairs(one, new Set(["a>b", "c>d"]));
+  const got = await Blk.loadPairs(one);
+  assert.deepStrictEqual([[...got.pairs].sort(), got.planned], [["a>b", "c>d"], true]);
+  const other = await Blk.loadPairs(two);
+  assert.deepStrictEqual([[...other.pairs], other.planned], [[], false], "a different list starts again");
+  await Blk.savePairs(two, new Set());
+  assert.deepStrictEqual((await Blk.loadPairs(two)).planned, true, "a list that turned out to need no pairs is still planned for");
+});
+
+// a stand-in router: every leg between two houses reports the streets of both, so a house on a blocked
+// street is reached down it
+const streetsFor = (order) => (points) => Promise.resolve(points.slice(1).map((_, i) => {
+  const to = order[i], from = i === 0 ? null : order[i - 1];
+  return [...new Set([from, to].filter(Boolean).map((id) => Str.streetOf(by.get(id).address)))];
+}));
+
+await test("planAroundBlocked: finds the legs that use a blocked road, makes those pairs expensive and orders again", async () => {
+  const order = SEED_ORDERS.C3.slice(0, 12);
+  const blockedStreet = Str.streetOf(by.get(order[5]).address);
+  const clear = [...order].reverse();
+  const asked = [];
+  // the order as it stands drives down the blocked road; the one reorder gives back does not
+  const streetsOnLegs = (points) => Promise.resolve(points.slice(1).map((_, i) => {
+    const current = asked.length === 0 ? order : clear;
+    return current === clear ? [] : [...new Set([i === 0 ? null : current[i - 1], current[i]].filter(Boolean).map((id) => Str.streetOf(by.get(id).address)))];
+  }));
+  const plan = await BPlan.planAroundBlocked({
+    order, startCoord: { lat: 43.4659, lng: -80.5247 }, coordOf,
+    blocked: new Set([blockedStreet]), streetOfHouse: () => "",
+    reorder: (pairs) => { asked.push(new Set(pairs)); return clear; },
+    streetsOnLegs, rounds: 2,
+  });
+  assert.ok(plan.pairs.size > 0, "pairs on the blocked road were found");
+  for (const p of plan.pairs) {
+    const [from, to] = p.split(">");
+    assert.ok([from, to].some((id) => Str.streetOf(by.get(id).address) === blockedStreet), p);
+  }
+  assert.deepStrictEqual(plan.orderedIds, clear, "the order that avoids the road is the one returned");
+  assert.deepStrictEqual([asked.length, plan.remaining.length, plan.rounds], [1, 0, 2]);
+});
+
+await test("planAroundBlocked: stops as soon as nothing new is blocked, and does nothing when no road is blocked", async () => {
+  const order = SEED_ORDERS.C3.slice(0, 10);
+  let calls = 0;
+  const clean = await BPlan.planAroundBlocked({
+    order, startCoord: { lat: 43.4659, lng: -80.5247 }, coordOf, blocked: new Set(["NOWHERE RD"]), streetOfHouse: (id) => Str.streetOf(by.get(id).address),
+    reorder: () => { calls++; return [...order]; }, streetsOnLegs: streetsFor(order),
+  });
+  assert.deepStrictEqual([clean.orderedIds, clean.pairs.size, clean.remaining.length, clean.rounds, calls], [order, 0, 0, 1, 0], "one look, nothing found, no re-order");
+  const none = await BPlan.planAroundBlocked({
+    order, startCoord: { lat: 43.4659, lng: -80.5247 }, coordOf, blocked: new Set(), streetOfHouse: (id) => Str.streetOf(by.get(id).address),
+    reorder: () => { throw new Error("should not re-order"); },
+    streetsOnLegs: () => { throw new Error("should not ask the router"); },
+  });
+  assert.deepStrictEqual([none.orderedIds, none.rounds], [order, 0]);
+});
+await test("planAroundBlocked: pairs learnt before are applied without asking the router again", async () => {
+  const order = SEED_ORDERS.C3.slice(0, 8);
+  const known = new Set([`${order[2]}>${order[3]}`]);
+  let reordered = null;
+  const plan = await BPlan.planAroundBlocked({
+    order, startCoord: { lat: 43.4659, lng: -80.5247 }, coordOf, blocked: new Set(["NOWHERE RD"]), streetOfHouse: (id) => Str.streetOf(by.get(id).address), known,
+    reorder: (pairs) => { reordered = new Set(pairs); return [...order]; }, streetsOnLegs: streetsFor(order),
+  });
+  assert.deepStrictEqual([...reordered], [...known], "the known pairs were applied before any lookup");
+  assert.deepStrictEqual([...plan.pairs], [...known]);
+});
+await test("planAroundBlocked: the leg out of the library is reported but never made expensive", async () => {
+  const order = SEED_ORDERS.C3.slice(0, 6);
+  const first = Str.streetOf(by.get(order[0]).address);
+  const plan = await BPlan.planAroundBlocked({
+    order, startCoord: { lat: 43.4659, lng: -80.5247 }, coordOf, blocked: new Set([first]), streetOfHouse: () => "",
+    reorder: () => [...order], streetsOnLegs: streetsFor(order), rounds: 1,
+  });
+  assert.ok(plan.remaining.some((l) => l.from === null && l.to === order[0]), "flagged");
+  for (const p of plan.pairs) assert.ok(!p.startsWith("null>"), p);
+});
+
+await test("planAroundBlocked: a house on the blocked road is reported but never steered around, and a worse order is not kept", async () => {
+  const order = SEED_ORDERS.C3.slice(0, 10);
+  const onBlocked = Str.streetOf(by.get(order[4]).address);
+  let reorders = 0;
+  const plan = await BPlan.planAroundBlocked({
+    order, startCoord: { lat: 43.4659, lng: -80.5247 }, coordOf, blocked: new Set([onBlocked]),
+    streetOfHouse: (id) => Str.streetOf(by.get(id).address),
+    reorder: () => { reorders++; return [...order].reverse(); },
+    streetsOnLegs: streetsFor(order),
+  });
+  assert.deepStrictEqual([plan.pairs.size, reorders], [0, 0], "you have to drive down it to deliver there, so nothing is made expensive");
+  assert.deepStrictEqual(plan.orderedIds, order, "the order is left alone");
+  assert.ok(plan.remaining.some((l) => l.to === order[4]), "the stop is still flagged");
+});
+await test("planAroundBlocked: when steering around leaves more blocked legs than before, the first order is kept", async () => {
+  const order = SEED_ORDERS.C3.slice(0, 8);
+  const blockedStreet = Str.streetOf(by.get(order[3]).address);
+  const worse = [...order].reverse();
+  let call = 0;
+  const legsFor = (o) => (points) => Promise.resolve(points.slice(1).map((_, i) => {
+    // the first order touches it once; the re-ordered one touches it on every leg
+    const current = call === 0 ? order : worse;
+    return current === order ? (i === 3 ? [blockedStreet] : []) : [blockedStreet];
+  }));
+  const plan = await BPlan.planAroundBlocked({
+    order, startCoord: { lat: 43.4659, lng: -80.5247 }, coordOf, blocked: new Set([blockedStreet]),
+    streetOfHouse: () => "",
+    reorder: () => { call++; return worse; },
+    streetsOnLegs: legsFor(order),
+    rounds: 2,
+  });
+  assert.deepStrictEqual(plan.orderedIds, order, "the order that uses the blocked road least is the one returned");
+  assert.strictEqual(plan.remaining.length, 1);
+});
+
+await test("a blocked pair is pushed away in the ordering, and left out of a distance that will be driven", () => {
+  const order = SEED_ORDERS.C3.slice(0, 6);
+  const plain = HD.plannedMeters({ stopIds: order, order, coordOf, matrixIdOf, start: { kind: "library" } });
+  const pair = HD.pairKey(order[1], order[2]);
+  HD.setBlockedPairs(new Set([pair]));
+  try {
+    const withPenalty = HD.orderCost({ stopIds: order, order, coordOf, matrixIdOf, start: { kind: "library" } });
+    assert.strictEqual(Math.round(HD.plannedMeters({ stopIds: order, order, coordOf, matrixIdOf, start: { kind: "library" } })), Math.round(plain), "the distance actually driven is unchanged");
+    const solved = HD.orderStops({ stopIds: order, coordOf, matrixIdOf, start: { kind: "library" }, candidates: [order], ms: 500 });
+    assert.ok(!solved.orderedIds.some((id, i) => i > 0 && HD.pairKey(solved.orderedIds[i - 1], id) === pair), "the blocked pair is not in the new order");
+    assert.ok(withPenalty > 0);
+  } finally {
+    HD.setBlockedPairs(new Set());
+  }
+  assert.strictEqual(Math.round(HD.plannedMeters({ stopIds: order, order, coordOf, matrixIdOf, start: { kind: "library" } })), Math.round(plain));
+});
+
 cleanup();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

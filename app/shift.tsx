@@ -3,6 +3,7 @@ import { Alert, AppState, KeyboardAvoidingView, Modal, Platform, Pressable, Scro
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AddHouseForm from "@/components/AddHouseForm";
 import { clearAlertError, lastAlertError, syncNextHouse } from "@/lib/alerts";
+import { lastBlockedError } from "@/lib/shift";
 import { useKeepAwake } from "expo-keep-awake";
 import { useRouter } from "expo-router";
 import DraggableFlatList, { RenderItemParams, ScaleDecorator } from "react-native-draggable-flatlist";
@@ -56,6 +57,8 @@ export default function Shift() {
   // The ongoing "next house" notification follows the shift on screen. The first run asks for permission; a refusal,
   // or a failure in the background button handler, is shown below the header, not hidden.
   const [alertError, setAlertError] = useState<string | null>(null);
+  const [blockedError, setBlockedError] = useState<string | null>(null);
+  useEffect(() => { lastBlockedError().then(setBlockedError).catch(() => setBlockedError(null)); }, []);
   const askedForAlerts = useRef(false);
   const syncAlerts = useCallback((ask: boolean) => {
     if (!ready) return;
@@ -237,6 +240,7 @@ export default function Shift() {
   const renderItem = ({ item, drag, isActive }: RenderItemParams<Subscriber>) => {
     const isDone = delivered.includes(item.id);
     const isNext = nextStop?.id === item.id;
+    const blocked = state?.blockedStops?.includes(item.id) ?? false;
     const userNote = notes[noteKey(item)];
     const depotNote = DEPOT_NOTES[item.id] ?? item.note;
     return (
@@ -257,6 +261,7 @@ export default function Shift() {
           >
             <Text style={[styles.rowAddress, isDone && styles.rowStrike]}>{item.address}</Text>
             <Text style={[styles.rowName, isDone && styles.rowStrike]}>{item.name}</Text>
+            {blocked ? <Text style={styles.rowBlocked}>⚠ the way here goes down a road you marked blocked</Text> : null}
             {depotNote ? <Text style={styles.rowDepotNote}>📮 {depotNote}</Text> : null}
             {userNote ? <Text style={styles.rowNote}>✎ {userNote}</Text> : null}
             <Text style={styles.rowMeta}>{item.routeId} · {item.postal}{item.schedule ? ` · ${item.schedule}` : ""}</Text>
@@ -298,6 +303,9 @@ export default function Shift() {
           </Text>
         )}
         {distances.error && <Text style={styles.headerError}>Distance unavailable: {distances.error}</Text>}
+        {blockedError && (
+          <Text style={styles.headerWarn}>Blocked roads: tonight's route couldn't be checked ({blockedError}) Any roads learnt before are still avoided.</Text>
+        )}
         {alertError && (
           <Pressable onPress={async () => { await clearAlertError(); syncAlerts(true); }} hitSlop={8}>
             <Text style={styles.headerWarn}>Notifications: {alertError} Tap to try again.</Text>
@@ -495,6 +503,7 @@ const styles = StyleSheet.create({
   footerBtn: { padding: 8, alignItems: "center" },
   footerText: { color: "#666", fontSize: 12 },
   footerLink: { color: "#60a5fa", fontSize: 13 },
+  rowBlocked: { color: "#fca5a5", fontSize: 12, marginTop: 4 },
   addWrap: { flex: 1, backgroundColor: "#0a0a0a" },
   addContent: { padding: 16, paddingTop: 48, gap: 8, paddingBottom: 40 },
   addBack: { color: "#60a5fa", fontSize: 15 },

@@ -6,7 +6,10 @@ const KEY_PREFIX = "@rr/shift/";
 // optimized, 209 stops · 33.77 km · 89.8 min, vs ~42 km alpha-concat fallback).
 // v14: bumped 2026-10-23 so the direction-aware seeds (scripts/bake-heading-seeds.mjs)
 // replace orders saved from the old seeds, which sent the car round blocks to reverse.
-const LAST_ORDER_PREFIX = "@rr/lastOrder/v14/";
+// v15: bumped 2026-11-12 so an order is kept per delivery pattern. One key for every night meant a Friday order
+// (with the Fri/Sat-only houses) was reused on a Tuesday with those houses dropped out of it, leaving the shape
+// that had been planned around them: measured 8.45 km against 7.04 km on C3.
+const LAST_ORDER_PREFIX = "@rr/lastOrder/v15/";
 
 export function todayKey(): string {
   const d = new Date();
@@ -67,14 +70,16 @@ export function routeSetKey(routeIds: readonly string[]): string {
 // `revTag` names the revision of each imported route in the set ("" when every
 // route is built in, which keeps existing saved orders valid). Re-importing a
 // route changes its houses, so orders saved for the old revision stop matching.
-const orderKey = (routeIds: readonly string[], revTag: string) =>
-  LAST_ORDER_PREFIX + routeSetKey(routeIds) + (revTag ? `#${revTag}` : "");
+// `dayTag` names which houses get a paper that night (src/lib/schedule.ts), so nights that deliver different
+// houses keep different orders.
+const orderKey = (routeIds: readonly string[], revTag: string, dayTag: string) =>
+  LAST_ORDER_PREFIX + routeSetKey(routeIds) + (revTag ? `#${revTag}` : "") + (dayTag ? `@${dayTag}` : "");
 
-export async function loadLastOrder(routeIds: readonly string[], revTag = ""): Promise<string[] | null> {
-  const raw = await AsyncStorage.getItem(orderKey(routeIds, revTag));
+export async function loadLastOrder(routeIds: readonly string[], revTag = "", dayTag = ""): Promise<string[] | null> {
+  const raw = await AsyncStorage.getItem(orderKey(routeIds, revTag, dayTag));
   return raw ? JSON.parse(raw) : null;
 }
 
-export async function saveLastOrder(routeIds: readonly string[], orderedIds: string[], revTag = ""): Promise<void> {
-  await AsyncStorage.setItem(orderKey(routeIds, revTag), JSON.stringify(orderedIds));
+export async function saveLastOrder(routeIds: readonly string[], orderedIds: string[], revTag = "", dayTag = ""): Promise<void> {
+  await AsyncStorage.setItem(orderKey(routeIds, revTag, dayTag), JSON.stringify(orderedIds));
 }

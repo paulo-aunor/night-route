@@ -52,6 +52,8 @@ export interface ShiftState {
   skippedIds: string[];
   orderedIds: string[];
   startOrder?: string[];   // the order the shift started with, before any re-route or drag, to compare with how it was driven
+  // Houses the route still reaches down a road you marked blocked, after the order was planned around them.
+  blockedStops?: string[];
   deliveryDayIdx?: number;
   // "gps" once the shift started from a live location or was re-routed from one.
   // Those orders are anchored to wherever Paulo was standing, so Shift done does

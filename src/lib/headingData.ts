@@ -72,6 +72,14 @@ let extraRoads: ReadonlyMap<string, number> = new Map();
 export function setExtraRoadDistances(m: ReadonlyMap<string, number>): void { extraRoads = m; }
 export const roadKey = (from: string, to: string): string => `${from}>${to}`;
 
+// House pairs whose road goes down a street you marked blocked (src/lib/blocked.ts), as "from>to". Ordering adds
+// a big penalty so another order is preferred; a distance that will really be driven leaves it out, like the
+// cut-through penalties.
+let blocked: ReadonlySet<string> = new Set();
+export function setBlockedPairs(pairs: ReadonlySet<string>): void { blocked = pairs; }
+export const pairKey = (from: string, to: string): string => `${from}>${to}`;
+export const BLOCKED_PENALTY_M = 3000;
+
 // `at` says the car is at a known house (the one just delivered) facing one of its two directions, or `null` when
 // that is not known; the first leg then costs what it really costs from that house instead of a straight-line guess.
 export type StartSpec =
@@ -119,6 +127,9 @@ export function buildProblem(input: HeadingInput & { withPenalties?: boolean }):
       } else {
         const e = extraRoads.get(roadKey(ids[a], ids[b])) ?? straightRoadMeters(coords[a], coords[b]);
         for (let q = 0; q < 4; q++) c[q][a * n + b] = e;
+      }
+      if (pen && blocked.size > 0 && blocked.has(pairKey(ids[a], ids[b]))) {
+        for (let q = 0; q < 4; q++) c[q][a * n + b] += BLOCKED_PENALTY_M;
       }
     }
   }

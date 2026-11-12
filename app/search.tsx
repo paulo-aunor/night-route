@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { searchHouses } from "@/lib/houseSearch";
+import { DEPOT_NOTES } from "@/data/depot-notes";
+import { noteKey, useNotes } from "@/lib/notes";
 import { usePaused } from "@/lib/paused";
 import { allSubscribers, isAddedHouse, registry, useRegistry } from "@/lib/registry";
 import { useShift } from "@/lib/shift";
+import type { Subscriber } from "@/types";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -14,8 +17,14 @@ export default function SearchHouses() {
   const reg = useRegistry();
   const { paused, togglePaused } = usePaused();
   const { state: shift } = useShift();
+  const { notes, setNote } = useNotes();
   const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState<Subscriber | null>(null);
+  const [draft, setDraft] = useState("");
   const results = useMemo(() => searchHouses(allSubscribers(), query), [query, reg.state]);
+
+  const openNote = (s: Subscriber) => { setEditing(s); setDraft(notes[noteKey(s)] ?? ""); };
+  const saveNote = () => { if (editing) setNote(noteKey(editing), draft); setEditing(null); };
 
   const remove = (id: string, address: string) => {
     if (shift) {
@@ -63,11 +72,18 @@ export default function SearchHouses() {
               <Text style={styles.meta}>
                 {s.routeId} · {s.city}{s.postal ? ` · ${s.postal}` : ""}{s.schedule ? ` · ${s.schedule}` : ""}{stopped ? " · STOPPED" : ""}
               </Text>
-              {isAddedHouse(s.id) && (
-                <Pressable onPress={() => remove(s.id, s.address)} hitSlop={8}>
-                  <Text style={styles.removeText}>Added by hand · Remove</Text>
+              {(DEPOT_NOTES[s.id] ?? s.note) ? <Text style={styles.depotNote}>📮 {DEPOT_NOTES[s.id] ?? s.note}</Text> : null}
+              {notes[noteKey(s)] ? <Text style={styles.note}>✎ {notes[noteKey(s)]}</Text> : null}
+              <View style={styles.rowLinks}>
+                <Pressable onPress={() => openNote(s)} hitSlop={8}>
+                  <Text style={styles.link}>{notes[noteKey(s)] ? "Edit note" : "Add note"}</Text>
                 </Pressable>
-              )}
+                {isAddedHouse(s.id) && (
+                  <Pressable onPress={() => remove(s.id, s.address)} hitSlop={8}>
+                    <Text style={styles.removeText}>Added by hand · Remove</Text>
+                  </Pressable>
+                )}
+              </View>
             </View>
             <Pressable style={[styles.btn, stopped ? styles.resumeBtn : styles.stopBtn]} onPress={() => togglePaused(s.id)} hitSlop={8}>
               <Text style={[styles.btnText, stopped ? styles.resumeText : styles.stopText]}>{stopped ? "Resume" : "Stop"}</Text>
@@ -75,6 +91,37 @@ export default function SearchHouses() {
           </View>
         );
       })}
+
+      <Modal visible={!!editing} animationType="slide" transparent onRequestClose={() => setEditing(null)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setEditing(null)} />
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{editing?.address}</Text>
+            <Text style={styles.modalSub}>{editing?.name}{editing?.postal ? ` · ${editing.postal}` : ""}</Text>
+            {editing && (DEPOT_NOTES[editing.id] ?? editing.note) ? (
+              <Text style={styles.depotNote}>📮 {DEPOT_NOTES[editing.id] ?? editing.note}</Text>
+            ) : null}
+            <TextInput
+              style={styles.modalInput}
+              multiline
+              autoFocus
+              placeholder="e.g. 'side door', 'red brick, no number', 'watch for dog'"
+              placeholderTextColor="#555"
+              value={draft}
+              onChangeText={setDraft}
+            />
+            <Text style={styles.modalHint}>The note follows the address, so it survives a re-import of the route. Clearing the box removes it.</Text>
+            <View style={styles.modalActions}>
+              <Pressable style={styles.modalCancel} onPress={() => setEditing(null)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable style={styles.modalSave} onPress={saveNote}>
+                <Text style={styles.modalSaveText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </ScrollView>
   );
 }
@@ -95,7 +142,22 @@ const styles = StyleSheet.create({
   address: { color: "#f5f5f5", fontSize: 15, fontWeight: "600" },
   name: { color: "#aaa", fontSize: 13, marginTop: 2 },
   meta: { color: "#666", fontSize: 11, marginTop: 4 },
-  removeText: { color: "#f87171", fontSize: 11, marginTop: 6 },
+  removeText: { color: "#f87171", fontSize: 11 },
+  rowLinks: { flexDirection: "row", gap: 16, marginTop: 6, alignItems: "center" },
+  depotNote: { color: "#c4b5fd", fontSize: 12, marginTop: 4 },
+  note: { color: "#93c5fd", fontSize: 12, marginTop: 2 },
+  modalWrap: { flex: 1, justifyContent: "flex-end" },
+  modalBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.6)" },
+  modalCard: { backgroundColor: "#161616", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, gap: 8 },
+  modalTitle: { color: "#f5f5f5", fontSize: 18, fontWeight: "700" },
+  modalSub: { color: "#aaa", fontSize: 13 },
+  modalInput: { backgroundColor: "#0a0a0a", color: "#f5f5f5", borderRadius: 10, borderWidth: 1, borderColor: "#222", padding: 12, fontSize: 15, minHeight: 90, textAlignVertical: "top", marginTop: 4 },
+  modalHint: { color: "#777", fontSize: 11, lineHeight: 16 },
+  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 16, marginTop: 4 },
+  modalCancel: { paddingVertical: 10, paddingHorizontal: 12 },
+  modalCancelText: { color: "#888", fontSize: 15 },
+  modalSave: { paddingVertical: 10, paddingHorizontal: 20, borderRadius: 8, backgroundColor: "#4ade80" },
+  modalSaveText: { color: "#0a0a0a", fontSize: 15, fontWeight: "700" },
   btn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
   stopBtn: { backgroundColor: "#2a1212", borderWidth: 1, borderColor: "#7f1d1d" },
   resumeBtn: { backgroundColor: "#facc15" },

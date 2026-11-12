@@ -1,6 +1,8 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Optimization, RouteId, ShiftState } from "@/types";
 import { anchorIdsFor } from "@/data/anchors";
+import { LIBRARY } from "@/data/routes";
 import { SEED_ORDERS } from "@/data/seed-orders";
 import { isAtLibrary } from "./location";
 import { loadPaused } from "./paused";
@@ -11,6 +13,11 @@ import { appendRecord, buildRecord, routeBreakdown, type Leg } from "./history";
 import { matrixIdOfHouse } from "./matrixAlias";
 import { mergeOrder } from "./mergeOrder";
 import { clearHouseNotifications, recordAlertError } from "./alerts";
+import { liveStreets, loadBlocked, loadPairs, savePairs, signatureOf } from "./blocked";
+import { planAroundBlocked } from "./blockedPlan";
+import { setBlockedPairs } from "./headingData";
+import { streetsOnLegs } from "./roads";
+import { streetOf } from "./streets";
 import { markDeliveredState } from "./nextHouse";
 import { onShiftChangedElsewhere } from "./shiftEvents";
 import { haversineM, optimize as optimizeV2, type Coord } from "./optimizer-v2";
@@ -18,7 +25,7 @@ import {
   allSubscribers, importedSeed, isImportedRoute, revisionTag, subscribersForRoutes, subscribersForRoutesOn,
 } from "./registry";
 import { reopenShift, saveClosed } from "./reopen";
-import { deliversOn, paperDayIndex } from "./schedule";
+import { deliversOn, FULL_PAPER_DAY, patternTag, paperDayIndex } from "./schedule";
 import { loadRateCents } from "./settings";
 import { headingBefore, metersAt, stopTracking, trackDistance, trackedPoints, trackProfile } from "./tracking";
 import {
@@ -48,6 +55,85 @@ function placeAdded(order: string[], saved: readonly string[] | null, seed: read
   return placeNewHouses(order, known, anchors, coordLookup(), matrixLookup());
 }
 
+// The baked seeds, and any order saved for another night, cover every house on the route. On a night when some of
+// them get no paper, dropping them leaves the shape that was planned around them: on C3 that measured 8.45 km
+// against 7.04 km for an order solved for the night, with a third more turns. So when houses are missing from the
+// order being built on, it is re-solved from there, and the result kept only if it is clearly shorter.
+export function tightenForTonight(
+  order: readonly string[],
+  base: readonly string[],
+  stoppedIds: readonly string[],
+  routeIds: readonly string[],
+  ms = 1500,
+): string[] {
+  const keeping = new Set(order);
+  if (base.every((id) => keeping.has(id))) return [...order];   // nothing was dropped: the order already fits
+  const stopped = new Set(stoppedIds);
+  const live = order.filter((id) => !stopped.has(id));
+  const tail = order.filter((id) => stopped.has(id));
+  if (live.length < 3) return [...order];
+  const coordOf = coordLookup(), matrixIdOf = matrixLookup();
+  const liveSet = new Set(live);
+  const fixedIds = anchorIdsFor(routeIds, allSubscribers()).filter((id) => liveSet.has(id));
+  const start: StartSpec = { kind: "library" };
+  const solved = orderStops({ stopIds: live, coordOf, matrixIdOf, start, fixedIds, candidates: [live], ms });
+  const cost = (o: readonly string[]) => orderCost({ stopIds: o, order: o, coordOf, matrixIdOf, start });
+  return worthChanging(cost(live), cost(solved.orderedIds)) ? [...solved.orderedIds, ...tail] : [...order];
+}
+
+// Plans the order away from the roads marked blocked. Never throws: with no signal the pairs learnt on an earlier
+// shift are still applied, and why it couldn't be checked is kept for the shift screen.
+const BLOCKED_ERROR = "@rr/blocked/error";
+export async function steerAroundBlocked(
+  order: readonly string[],
+  stoppedIds: readonly string[],
+  routeIds: readonly string[],
+  startCoord: Coord,
+): Promise<{ orderedIds: string[]; blockedStops: string[] }> {
+  const streets = liveStreets(await loadBlocked(), Date.now());
+  if (streets.size === 0) {
+    setBlockedPairs(new Set());
+    await AsyncStorage.removeItem(BLOCKED_ERROR);
+    return { orderedIds: [...order], blockedStops: [] };
+  }
+  const signature = signatureOf(streets);
+  const { pairs: known, planned } = await loadPairs(signature);
+  const stopped = new Set(stoppedIds);
+  const tail = order.filter((id) => stopped.has(id));
+  const coordOf = coordLookup(), matrixIdOf = matrixLookup();
+  const houses = new Map(allSubscribers().map((h) => [h.id, h]));
+  const start: StartSpec = isAtLibrary(startCoord) ? { kind: "library" } : { kind: "gps", coord: startCoord };
+  let live = order.filter((id) => !stopped.has(id));
+  const reorder = (pairs: ReadonlySet<string>): string[] => {
+    setBlockedPairs(pairs);
+    const liveSet = new Set(live);
+    const fixedIds = anchorIdsFor(routeIds, allSubscribers()).filter((id) => liveSet.has(id));
+    live = orderStops({ stopIds: live, coordOf, matrixIdOf, start, fixedIds, candidates: [live], ms: 1500 }).orderedIds;
+    return live;
+  };
+  try {
+    const plan = await planAroundBlocked({
+      order: live, startCoord, coordOf, blocked: streets, known, reorder,
+      streetOfHouse: (id) => { const h = houses.get(id); return h ? streetOf(h.address) : ""; },
+      streetsOnLegs: (points) => streetsOnLegs(points),
+      // a list planned for before only needs one look, to flag the stops it still reaches down a blocked road
+      rounds: planned ? 1 : 3,
+    });
+    setBlockedPairs(plan.pairs);
+    await savePairs(signature, plan.pairs);
+    await AsyncStorage.removeItem(BLOCKED_ERROR);
+    return { orderedIds: [...plan.orderedIds, ...tail], blockedStops: plan.remaining.map((l) => l.to) };
+  } catch (e) {
+    setBlockedPairs(known);
+    await AsyncStorage.setItem(BLOCKED_ERROR, e instanceof Error ? e.message : String(e));
+    return { orderedIds: known.size > 0 ? [...reorder(known), ...tail] : [...order], blockedStops: [] };
+  }
+}
+
+export async function lastBlockedError(): Promise<string | null> {
+  return AsyncStorage.getItem(BLOCKED_ERROR);
+}
+
 export type StartOptions = {
   startCoord?: Coord;              // live GPS fix; ignored when it's at the library
   excludeIds?: readonly string[];  // stopped houses, left out of the solve
@@ -70,9 +156,15 @@ function getExactSeed(routeIds: readonly string[]): string[] | null {
 // The order a route would be delivered in from the library right now, every house
 // on it (all days): the last saved order if there is one, otherwise the seed.
 // An update from a new PDF keeps this order and slots changes into it.
+// Names the set of houses delivered on `dayIdx`, so a Tuesday order is never loaded for a Friday.
+function dayTagFor(routeIds: readonly RouteId[], dayIdx: number): string {
+  return patternTag(subscribersForRoutes(routeIds).map((s) => s.schedule), dayIdx);
+}
+
 export async function currentRouteOrder(routeId: RouteId): Promise<string[]> {
   const ids = subscribersForRoutes([routeId]).map((s) => s.id);
-  const saved = await loadLastOrder([routeId], revisionTag([routeId]));
+  // every house on the route, so the order wanted is the one for the night they all get a paper
+  const saved = await loadLastOrder([routeId], revisionTag([routeId]), dayTagFor([routeId], FULL_PAPER_DAY));
   const seed = getExactSeed([routeId]);
   if (saved && saved.length) return mergeOrder(saved, ids, seed);
   if (seed) return mergeOrder(seed, ids, seed);
@@ -328,34 +420,43 @@ export function useShift() {
     // Stopped houses stay in the order (hidden at render) so Resume works mid-shift.
     const hiddenTail = eligibleIds.filter((id) => excluded.has(id));
 
+    const dayTag = dayTagFor(routeIds, dayIdx);
     const startCoord = opts?.startCoord;
     const fromGps = startCoord !== undefined && !isAtLibrary(startCoord);
     const coordOf = coordLookup();
     const revTag = revisionTag(routeIds);
 
     let orderedIds: string[];
+    let blockedStops: string[] = [];
     const optimizations: Optimization[] = [];
     if (fromGps) {
       // Away from the library: library-anchored seeds and saved orders don't fit,
       // so solve from where Paulo is standing.
-      const saved = await loadLastOrder(routeIds, revTag);
+      const saved = await loadLastOrder(routeIds, revTag, dayTag);
       const seed = getExactSeed(routeIds);
-      const base = saved && saved.length ? placeAdded(mergeOrder(saved, eligibleIds, seed), saved, seed, routeIds)
+      const source = saved && saved.length ? saved : seed;
+      const merged = saved && saved.length ? placeAdded(mergeOrder(saved, eligibleIds, seed), saved, seed, routeIds)
         : seed ? placeAdded(mergeOrder(seed, eligibleIds, seed), null, seed, routeIds) : null;
       await nextFrame();
+      const base = merged && source ? tightenForTonight(merged, source, hiddenTail, routeIds) : merged;
       const plan = planFromGps(solvable, base, startCoord, coordOf, matrixLookup());
       orderedIds = [...plan.orderedIds, ...hiddenTail];
+      ({ orderedIds, blockedStops } = await steerAroundBlocked(orderedIds, hiddenTail, routeIds, startCoord));
       if (plan.beforeM !== null) {
         optimizations.push({ at: Date.now(), kind: "start", houses: solvable.length, beforeM: plan.beforeM, afterM: plan.afterM });
       }
     } else {
       // Priority: saved last shift's order → exact seed → on-device solver.
-      const saved = await loadLastOrder(routeIds, revTag);
+      const saved = await loadLastOrder(routeIds, revTag, dayTag);
       const seed = getExactSeed(routeIds);
       if (saved && saved.length) {
         orderedIds = placeAdded(mergeOrder(saved, eligibleIds, seed), saved, seed, routeIds);
+        await nextFrame();
+        orderedIds = tightenForTonight(orderedIds, saved, hiddenTail, routeIds);
       } else if (seed) {
         orderedIds = placeAdded(mergeOrder(seed, eligibleIds, seed), null, seed, routeIds);
+        await nextFrame();
+        orderedIds = tightenForTonight(orderedIds, seed, hiddenTail, routeIds);
       } else {
         const solvableSet = new Set(solvable);
         const preKeep = anchorIdsFor(routeIds, allSubscribers()).filter((id) => solvableSet.has(id));
@@ -374,8 +475,13 @@ export function useShift() {
       }
     }
 
+    if (!fromGps) {
+      ({ orderedIds, blockedStops } = await steerAroundBlocked(orderedIds, hiddenTail, routeIds, { lat: LIBRARY.lat, lng: LIBRARY.lng }));
+    }
+
     const s: ShiftState = {
       ...newShift(todayKey(), routeIds, orderedIds, dayIdx, fromGps ? "gps" : "library"),
+      ...(blockedStops.length > 0 ? { blockedStops } : {}),
       startCoord: fromGps ? startCoord : undefined,
       optimizations,
       startOrder: [...orderedIds],
@@ -463,7 +569,7 @@ export function useShift() {
     const s = stateRef.current;
     if (!s) return;
     await recordShift(s);
-    if (s.startMode !== "gps") await saveLastOrder(s.routeIds, s.orderedIds, revisionTag(s.routeIds));
+    if (s.startMode !== "gps" && s.deliveryDayIdx !== undefined) await saveLastOrder(s.routeIds, s.orderedIds, revisionTag(s.routeIds), dayTagFor(s.routeIds, s.deliveryDayIdx));
     await clearShift(todayKey());
     setState(null);
     void clearHouseNotifications().catch(recordAlertError);
@@ -475,7 +581,7 @@ export function useShift() {
     const s = stateRef.current;
     if (!s) return;
     await recordShift(s);
-    if (s.startMode !== "gps") await saveLastOrder(s.routeIds, s.orderedIds, revisionTag(s.routeIds));
+    if (s.startMode !== "gps" && s.deliveryDayIdx !== undefined) await saveLastOrder(s.routeIds, s.orderedIds, revisionTag(s.routeIds), dayTagFor(s.routeIds, s.deliveryDayIdx));
     await clearShift(todayKey());
     setState(null);
     void clearHouseNotifications().catch(recordAlertError);
